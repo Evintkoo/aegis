@@ -1,0 +1,14 @@
+# Python (legacy toolkit, kept during the Rust migration)
+__pycache__/
+*.pyc
+
+# Rust
+/target/
+
+# Scan output — reports and generated CVE records are run artifacts, not source
+cve/
+*.report.html
+*.report.json
+turboly.html
+report.html
+report.json
