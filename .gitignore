@@ -1,3 +1,6 @@
+# Worktrees for isolated task/plan execution
+.worktrees/
+
 # Python (legacy toolkit, kept during the Rust migration)
 __pycache__/
 *.pyc
