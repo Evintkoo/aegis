@@ -35,7 +35,6 @@ impl ScriptedResponse {
         Self { status: 200, headers: vec![], body: body.into(), delay_ms }
     }
 
-    #[allow(dead_code)]
     pub fn header(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.headers.push((k.into(), v.into()));
         self
