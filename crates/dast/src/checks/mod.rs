@@ -1,3 +1,5 @@
+pub mod auth_bruteforce;
+pub mod blind_oob;
 pub mod cache_deception;
 pub mod clickjacking;
 pub mod cmdi;

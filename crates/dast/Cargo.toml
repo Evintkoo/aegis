@@ -5,13 +5,15 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22"
+pentest-collaborator = { path = "../collaborator" }
 pentest-core = { path = "../core" }
+rand = "0.9"
 regex = "1"
 reqwest = "0.13"
 serde_json = "1.0"
 rustls = "0.23"
 rustls-pki-types = "1.15"
-tokio = { version = "1.53", features = ["rt"] }
+tokio = { version = "1.53", features = ["rt", "process", "time"] }
 url = "2.5"
 webpki-roots = "1.0"
 x509-parser = "0.18"
