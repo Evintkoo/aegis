@@ -914,6 +914,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pentest-core",
+ "pentest-dast",
+ "serde_json",
  "tokio",
 ]
 

@@ -1,4 +1,4 @@
-use pentest_core::{Confidence, Finding, Severity};
+use pentest_core::{Confidence, Finding};
 use std::collections::HashMap;
 
 pub fn grade(finding: &Finding) -> Confidence {
@@ -146,6 +146,7 @@ pub fn remediation_for(check_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pentest_core::Severity;
 
     #[test]
     fn grade_returns_confirmed_when_proof_present() {
