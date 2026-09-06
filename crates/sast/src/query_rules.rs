@@ -366,4 +366,79 @@ mod tests {
         let findings = run("sast_path_traversal", Lang::JavaScript, "fs.readFileSync('./static/report.txt');");
         assert!(findings.is_empty());
     }
+
+    // --- TypeScript / additional-language coverage for query combinations
+    // that had a query defined in `all_rules()` but no test exercising it
+    // (found in review of commit 1b12bd8). Each TS source uses a real type
+    // annotation so it only parses under the TypeScript grammar, not just
+    // the JavaScript one -- proving the `Lang::TypeScript` query path
+    // itself, not merely JS-compatible syntax dispatched to TS.
+
+    #[test]
+    fn sqli_flags_ts_string_concat_query() {
+        let src = "const id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = \" + id, cb);";
+        let findings = run("sast_sqli_concat", Lang::TypeScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn sqli_does_not_flag_ts_parameterized_query() {
+        let src = "const id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = ?\", [id], cb);";
+        let findings = run("sast_sqli_concat", Lang::TypeScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn command_exec_flags_ts_child_process_exec() {
+        let src = "const cmd: string = getCmd();\nchild_process.exec(cmd);";
+        let findings = run("sast_command_exec", Lang::TypeScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn command_exec_does_not_flag_ts_array_spawn() {
+        let src = "const args: string[] = ['-la'];\nspawn('ls', args);";
+        let findings = run("sast_command_exec", Lang::TypeScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn weak_crypto_flags_ts_create_hash_md5() {
+        let src = "const pw: string = getPassword();\ncrypto.createHash('md5').update(pw).digest('hex');";
+        let findings = run("sast_weak_crypto", Lang::TypeScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn weak_crypto_does_not_flag_ts_create_hash_sha256() {
+        let src = "const pw: string = getPassword();\ncrypto.createHash('sha256').update(pw).digest('hex');";
+        let findings = run("sast_weak_crypto", Lang::TypeScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn path_traversal_flags_ts_readfile_concat() {
+        let src = "const name: string = getName();\nfs.readFileSync(baseDir + '/' + name);";
+        let findings = run("sast_path_traversal", Lang::TypeScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn path_traversal_does_not_flag_ts_readfile_literal() {
+        let src = "const name: string = getName();\nfs.readFileSync('./static/report.txt');";
+        let findings = run("sast_path_traversal", Lang::TypeScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn deserialize_flags_js_unserialize() {
+        let findings = run("sast_unsafe_deserialize", Lang::JavaScript, "unserialize(data);");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn deserialize_does_not_flag_js_json_parse() {
+        let findings = run("sast_unsafe_deserialize", Lang::JavaScript, "JSON.parse(data);");
+        assert!(findings.is_empty());
+    }
 }
