@@ -13,6 +13,12 @@ struct Cli {
     #[arg(short = 'u', long = "url")]
     url: Option<String>,
 
+    /// Source directory to run static analysis (SAST) against. Reads
+    /// local files only -- never gated behind --confirm, unlike DAST's
+    /// network checks. May be combined with -u or used standalone.
+    #[arg(long = "src")]
+    src: Option<String>,
+
     /// Parameter to fuzz for SQLi/XSS/open-redirect (auto-discovered via
     /// crawling when omitted)
     #[arg(short = 'p', long = "param")]
@@ -179,10 +185,10 @@ fn main() {
         return;
     }
 
-    let Some(url) = cli.url.clone() else {
-        eprintln!("error: -u/--url is required (or pass --list-checks)");
+    if cli.url.is_none() && cli.src.is_none() {
+        eprintln!("error: -u/--url or --src is required (or pass --list-checks)");
         std::process::exit(2);
-    };
+    }
 
     let mods: Vec<&pentest_dast::CheckEntry> = pentest_dast::ALL
         .iter()
@@ -197,126 +203,147 @@ fn main() {
     let param_mods: Vec<&pentest_dast::CheckEntry> =
         mods.iter().filter(|c| pentest_dast::PARAM.iter().any(|p| p.name == c.name)).copied().collect();
 
-    if !cli.confirm {
-        println!("DRY RUN — no requests will be sent. Add --confirm to execute.\n");
-        println!("  Target : {} {url}", cli.method);
-        let disc = if cli.no_crawl { "disabled (--no-crawl)" } else { "auto-discover via crawl" };
-        println!("  Param  : {}", cli.param.as_deref().map(str::to_string).unwrap_or_else(|| format!("(none — {disc})")));
-        println!("  Checks : {}", mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
-        println!("  Delay  : {}s   Sleep: {}s", cli.delay, cli.sleep);
-        println!("\nRun only against systems you own or are authorized to test.");
-        return;
-    }
-
-    if cli.insecure {
-        println!("WARNING: TLS verification DISABLED — only acceptable against your own self-signed dev host.\n");
-    }
-
     let headers = parse_headers(&cli.header);
-    let config = HttpClientConfig {
-        headers: headers.clone(),
-        delay: Duration::from_secs_f64(cli.delay),
-        verify_tls: !cli.insecure,
-        ..HttpClientConfig::default()
-    };
-    let client = HttpClient::new(url.clone(), config);
-    // Carries every opt-in/logic-check field alongside param/method so
-    // site checks see the same shared opts Python's run_all.py builds
-    // once and reuses everywhere -- ssrf/redirect/blind_oob (site checks
-    // that opportunistically use opts.param when present) previously saw
-    // neither -p nor --method during the site-checks phase, a gap that
-    // stayed invisible until these checks existed.
-    let base_opts = Opts {
-        param: cli.param.clone(),
-        method: cli.method.clone(),
-        wordlist: cli.wordlist.clone(),
-        sleep: cli.sleep,
-        ssrf_callback: cli.ssrf_callback.clone(),
-        collaborator: cli.collaborator.clone(),
-        external: cli.external,
-        login_url: cli.login_url.clone(),
-        auth_username: cli.auth_username.clone(),
-        user_field: cli.user_field.clone(),
-        pass_field: cli.pass_field.clone(),
-        auth_json: cli.auth_json,
-        auth_attempts: cli.auth_attempts,
-        ..Opts::default()
-    };
-
     let rt = tokio::runtime::Runtime::new().expect("failed to start async runtime");
     let mut report = Report::new();
 
-    println!("[*] Site checks: {}", site_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
-    let before = report.findings.len();
-    for m in &site_mods {
-        let findings = rt.block_on((m.run)(&client, &base_opts));
-        report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
-    }
-    for f in report.findings.iter_mut().skip(before) {
-        if f.url.is_empty() {
-            f.url = url.clone();
-        }
+    // SAST: reads local files only, never a network action against the
+    // target -- deliberately NOT gated behind --confirm, unlike every DAST
+    // check below (that gate exists solely to stop unconfirmed requests
+    // reaching a pentest target; a local source-tree scan sends none).
+    // Runs whenever --src is given, standalone or alongside -u.
+    if let Some(src) = &cli.src {
+        println!("[*] SAST scan: {src}");
+        let sast_findings = pentest_sast::scan(std::path::Path::new(src));
+        println!("[*] SAST: {} finding(s)", sast_findings.len());
+        report.add(sast_findings);
     }
 
-    if !param_mods.is_empty() {
-        if let Some(param) = cli.param.clone() {
-            println!("[*] Param checks on '{param}': {}", param_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
-            let base_value = reqwest::Url::parse(&url)
-                .ok()
-                .and_then(|u| u.query_pairs().find(|(k, _)| k == param.as_str()).map(|(_, v)| v.into_owned()))
-                .unwrap_or_else(|| "1".to_string());
-            let opts = Opts { param: Some(param.clone()), method: cli.method.clone(), base_value, ..base_opts.clone() };
+    let dast_ran = cli.url.is_some() && cli.confirm;
+
+    if let Some(url) = cli.url.clone() {
+        if !cli.confirm {
+            println!("DRY RUN — no requests will be sent. Add --confirm to execute.\n");
+            println!("  Target : {} {url}", cli.method);
+            let disc = if cli.no_crawl { "disabled (--no-crawl)" } else { "auto-discover via crawl" };
+            println!("  Param  : {}", cli.param.as_deref().map(str::to_string).unwrap_or_else(|| format!("(none — {disc})")));
+            println!("  Checks : {}", mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+            println!("  Delay  : {}s   Sleep: {}s", cli.delay, cli.sleep);
+            println!("\nRun only against systems you own or are authorized to test.");
+            if cli.src.is_none() {
+                // Pure DAST dry-run (no --src): preserve the original
+                // behavior of stopping here, before any report/CVE
+                // pipeline runs.
+                return;
+            }
+        } else {
+            if cli.insecure {
+                println!("WARNING: TLS verification DISABLED — only acceptable against your own self-signed dev host.\n");
+            }
+
+            let config = HttpClientConfig {
+                headers: headers.clone(),
+                delay: Duration::from_secs_f64(cli.delay),
+                verify_tls: !cli.insecure,
+                ..HttpClientConfig::default()
+            };
+            let client = HttpClient::new(url.clone(), config);
+            // Carries every opt-in/logic-check field alongside param/method so
+            // site checks see the same shared opts Python's run_all.py builds
+            // once and reuses everywhere -- ssrf/redirect/blind_oob (site checks
+            // that opportunistically use opts.param when present) previously saw
+            // neither -p nor --method during the site-checks phase, a gap that
+            // stayed invisible until these checks existed.
+            let base_opts = Opts {
+                param: cli.param.clone(),
+                method: cli.method.clone(),
+                wordlist: cli.wordlist.clone(),
+                sleep: cli.sleep,
+                ssrf_callback: cli.ssrf_callback.clone(),
+                collaborator: cli.collaborator.clone(),
+                external: cli.external,
+                login_url: cli.login_url.clone(),
+                auth_username: cli.auth_username.clone(),
+                user_field: cli.user_field.clone(),
+                pass_field: cli.pass_field.clone(),
+                auth_json: cli.auth_json,
+                auth_attempts: cli.auth_attempts,
+                ..Opts::default()
+            };
+
+            println!("[*] Site checks: {}", site_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
             let before = report.findings.len();
-            for m in &param_mods {
-                let findings = rt.block_on((m.run)(&client, &opts));
+            for m in &site_mods {
+                let findings = rt.block_on((m.run)(&client, &base_opts));
                 report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
             }
             for f in report.findings.iter_mut().skip(before) {
-                f.url = url.clone();
-                f.param = param.clone();
-                f.method = cli.method.clone();
-            }
-        } else if !cli.no_crawl {
-            let mine = if cli.no_mine {
-                MineMode::Off
-            } else if cli.mine_params {
-                MineMode::Aggressive
-            } else {
-                MineMode::Auto
-            };
-            let discovery_opts = DiscoveryOpts { crawl_pages: cli.crawl_pages, max_targets: cli.max_targets, mine };
-            let targets = rt.block_on(discover(&client, &url, &discovery_opts));
-            for (i, t) in targets.iter().enumerate() {
-                let ep = t.url.split('?').next().unwrap_or(&t.url);
-                if t.source == DiscoverySource::Mined {
-                    report.add(vec![Finding::new(
-                        "discovery",
-                        Severity::Info,
-                        "Hidden parameter discovered",
-                        format!("'{}' is honored by {ep} but not exposed in the HTML — found via parameter mining", t.param),
-                    )
-                    .with_evidence(format!("{ep} · {}", t.param))]);
-                }
-                println!("[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})", i + 1, targets.len(), t.method, t.param, t.source.as_str());
-                let tclient = HttpClient::new(
-                    t.url.clone(),
-                    HttpClientConfig { headers: headers.clone(), delay: Duration::from_secs_f64(cli.delay), verify_tls: !cli.insecure, ..HttpClientConfig::default() },
-                );
-                let topts = Opts { param: Some(t.param.clone()), method: t.method.clone(), base_value: t.value.clone(), ..base_opts.clone() };
-                let before = report.findings.len();
-                for m in &param_mods {
-                    let findings = rt.block_on((m.run)(&tclient, &topts));
-                    report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
-                }
-                for f in report.findings.iter_mut().skip(before) {
-                    f.url = t.url.clone();
-                    f.param = t.param.clone();
-                    f.method = t.method.clone();
-                    f.detail = format!("[{} {ep} · {}] {}", t.method, t.param, f.detail);
+                if f.url.is_empty() {
+                    f.url = url.clone();
                 }
             }
-        } else {
-            println!("[*] Param checks skipped (no -p and --no-crawl set)");
+
+            if !param_mods.is_empty() {
+                if let Some(param) = cli.param.clone() {
+                    println!("[*] Param checks on '{param}': {}", param_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+                    let base_value = reqwest::Url::parse(&url)
+                        .ok()
+                        .and_then(|u| u.query_pairs().find(|(k, _)| k == param.as_str()).map(|(_, v)| v.into_owned()))
+                        .unwrap_or_else(|| "1".to_string());
+                    let opts = Opts { param: Some(param.clone()), method: cli.method.clone(), base_value, ..base_opts.clone() };
+                    let before = report.findings.len();
+                    for m in &param_mods {
+                        let findings = rt.block_on((m.run)(&client, &opts));
+                        report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
+                    }
+                    for f in report.findings.iter_mut().skip(before) {
+                        f.url = url.clone();
+                        f.param = param.clone();
+                        f.method = cli.method.clone();
+                    }
+                } else if !cli.no_crawl {
+                    let mine = if cli.no_mine {
+                        MineMode::Off
+                    } else if cli.mine_params {
+                        MineMode::Aggressive
+                    } else {
+                        MineMode::Auto
+                    };
+                    let discovery_opts = DiscoveryOpts { crawl_pages: cli.crawl_pages, max_targets: cli.max_targets, mine };
+                    let targets = rt.block_on(discover(&client, &url, &discovery_opts));
+                    for (i, t) in targets.iter().enumerate() {
+                        let ep = t.url.split('?').next().unwrap_or(&t.url);
+                        if t.source == DiscoverySource::Mined {
+                            report.add(vec![Finding::new(
+                                "discovery",
+                                Severity::Info,
+                                "Hidden parameter discovered",
+                                format!("'{}' is honored by {ep} but not exposed in the HTML — found via parameter mining", t.param),
+                            )
+                            .with_evidence(format!("{ep} · {}", t.param))]);
+                        }
+                        println!("[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})", i + 1, targets.len(), t.method, t.param, t.source.as_str());
+                        let tclient = HttpClient::new(
+                            t.url.clone(),
+                            HttpClientConfig { headers: headers.clone(), delay: Duration::from_secs_f64(cli.delay), verify_tls: !cli.insecure, ..HttpClientConfig::default() },
+                        );
+                        let topts = Opts { param: Some(t.param.clone()), method: t.method.clone(), base_value: t.value.clone(), ..base_opts.clone() };
+                        let before = report.findings.len();
+                        for m in &param_mods {
+                            let findings = rt.block_on((m.run)(&tclient, &topts));
+                            report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
+                        }
+                        for f in report.findings.iter_mut().skip(before) {
+                            f.url = t.url.clone();
+                            f.param = t.param.clone();
+                            f.method = t.method.clone();
+                            f.detail = format!("[{} {ep} · {}] {}", t.method, t.param, f.detail);
+                        }
+                    }
+                } else {
+                    println!("[*] Param checks skipped (no -p and --no-crawl set)");
+                }
+            }
         }
     }
 
@@ -375,11 +402,17 @@ fn main() {
     }
 
     if let Some(path) = &cli.html_out {
-        let meta = vec![
-            ("Target".to_string(), format!("GET {url}")),
-            ("Checks run".to_string(), mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")),
-            ("Findings".to_string(), report.findings.len().to_string()),
-        ];
+        let mut meta = vec![(
+            "Target".to_string(),
+            cli.url.as_deref().map(|u| format!("{} {u}", cli.method)).unwrap_or_else(|| "(none — SAST-only run)".to_string()),
+        )];
+        if let Some(src) = &cli.src {
+            meta.push(("Source dir".to_string(), src.clone()));
+        }
+        if dast_ran {
+            meta.push(("Checks run".to_string(), mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")));
+        }
+        meta.push(("Findings".to_string(), report.findings.len().to_string()));
         match std::fs::write(path, report.to_html(&meta)) {
             Ok(()) => println!("[+] HTML report written to {path}"),
             Err(e) => eprintln!("warning: failed to write HTML report: {e}"),

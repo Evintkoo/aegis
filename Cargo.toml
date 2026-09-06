@@ -11,6 +11,7 @@ edition = "2021"
 pentest-core = { path = "crates/core" }
 pentest-cve-lookup = { path = "crates/cve-lookup" }
 pentest-dast = { path = "crates/dast" }
+pentest-sast = { path = "crates/sast" }
 clap = { version = "4.6", features = ["derive"] }
 reqwest = "0.13"
 serde_json = "1.0"

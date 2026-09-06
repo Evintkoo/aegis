@@ -938,6 +938,7 @@ dependencies = [
  "pentest-core",
  "pentest-cve-lookup",
  "pentest-dast",
+ "pentest-sast",
  "reqwest",
  "serde_json",
  "tokio",
