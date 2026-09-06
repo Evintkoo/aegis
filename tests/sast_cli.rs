@@ -104,10 +104,19 @@ fn pure_dast_dry_run_without_src_stops_before_report_output() {
 /// unbounded self-scan feedback loop. `--no-osv` keeps this test isolated
 /// from the network-dependent CVE-matching path, which is unrelated to
 /// this bug.
+///
+/// Uses an AWS-access-key-style secret rather than a quoted
+/// `key = "value"` assignment: the CVE record JSON-escapes embedded quotes
+/// (`\"...\"`), which breaks `ASSIGNED_SECRET`'s literal-quote match
+/// regardless of whether the exclusion fix is present -- a quoted fixture
+/// here would pass even with the exclusion silently broken. The
+/// `AWS_ACCESS_KEY` pattern needs no surrounding quotes, so re-detection
+/// inside the embedded-evidence JSON is unambiguous, and this test
+/// actually exercises the `main.rs` wiring it's named for.
 #[test]
 fn repeated_runs_with_cve_dir_inside_src_do_not_compound_findings() {
     let dir = fixture_dir("cve-loop");
-    std::fs::write(dir.join(".env"), "api_key = \"sk_live_abcdefgh12345678\"\n").unwrap();
+    std::fs::write(dir.join(".env"), "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n").unwrap();
     let cve_dir = dir.join("cve");
 
     let run = || {
