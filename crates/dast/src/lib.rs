@@ -1,3 +1,4 @@
+pub mod checks;
 pub mod opts;
 pub mod registry;
 pub mod verify;

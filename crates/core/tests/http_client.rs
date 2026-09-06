@@ -3,6 +3,12 @@ mod support;
 use pentest_core::{HttpClient, HttpClientConfig, HttpRequest};
 use support::{one_shot_server, TestResponse};
 
+#[test]
+fn base_url_returns_the_configured_base_url() {
+    let client = HttpClient::new("https://example.test", HttpClientConfig::default());
+    assert_eq!(client.base_url(), "https://example.test");
+}
+
 #[tokio::test]
 async fn get_request_returns_status_and_body() {
     let (base_url, rx) = one_shot_server(TestResponse::ok("hello")).await;

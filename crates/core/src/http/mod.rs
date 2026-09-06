@@ -40,6 +40,10 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     pub fn new(base_url: impl Into<String>, config: HttpClientConfig) -> Self {
         Self {
             base_url: base_url.into(),
