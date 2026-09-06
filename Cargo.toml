@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/dast"]
+members = ["crates/core", "crates/dast", "crates/collaborator"]
 
 [package]
 name = "pentest"
