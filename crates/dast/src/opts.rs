@@ -4,6 +4,7 @@ pub struct Opts {
     pub method: String,
     pub base_value: String,
     pub wordlist: Option<String>,
+    pub sleep: u64,
 }
 
 impl Default for Opts {
@@ -13,6 +14,7 @@ impl Default for Opts {
             method: "GET".to_string(),
             base_value: "1".to_string(),
             wordlist: None,
+            sleep: 5,
         }
     }
 }

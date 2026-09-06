@@ -939,7 +939,9 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-pki-types",
+ "serde_json",
  "tokio",
+ "url",
  "webpki-roots",
  "x509-parser",
 ]

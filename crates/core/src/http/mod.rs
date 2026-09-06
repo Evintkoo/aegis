@@ -48,6 +48,10 @@ impl HttpClient {
     /// for building absolute request URLs against other paths on the
     /// same origin. Distinct from `base_url()`, which returns the raw
     /// configured URL as-is (path/query included, if any).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
     pub fn base_url_root(&self) -> String {
         match reqwest::Url::parse(&self.base_url) {
             Ok(u) => format!("{}://{}", u.scheme(), u.authority()),
@@ -76,10 +80,11 @@ impl HttpClient {
         };
 
         let mut builder = client.request(req.method.clone(), url);
-        for (k, v) in &self.headers {
-            builder = builder.header(k, v);
-        }
+        let mut merged_headers = self.headers.clone();
         for (k, v) in &req.headers {
+            merged_headers.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &merged_headers {
             builder = builder.header(k, v);
         }
         if let Some(json) = &req.json {

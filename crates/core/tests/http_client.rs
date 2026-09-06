@@ -141,3 +141,29 @@ async fn concurrent_requests_on_the_same_client_are_serialized_by_the_rate_limit
     // close to 200ms. 350ms cleanly separates the two.
     assert!(start.elapsed() >= std::time::Duration::from_millis(350));
 }
+
+#[test]
+fn header_lookup_is_case_insensitive() {
+    let mut config = HttpClientConfig::default();
+    config.headers.insert("Authorization".to_string(), "Bearer abc".to_string());
+    let client = HttpClient::new("https://example.test", config);
+
+    assert_eq!(client.header("authorization"), Some("Bearer abc"));
+    assert_eq!(client.header("AUTHORIZATION"), Some("Bearer abc"));
+    assert_eq!(client.header("Cookie"), None);
+}
+
+#[tokio::test]
+async fn request_level_header_overrides_client_level_header_of_the_same_name() {
+    let (base_url, rx) = one_shot_server(TestResponse::ok("ok")).await;
+    let mut config = HttpClientConfig::default();
+    config.headers.insert("X-Foo".to_string(), "client-value".to_string());
+    let client = HttpClient::new(base_url, config);
+
+    client.request(HttpRequest::get().header("X-Foo", "req-value")).await.unwrap();
+
+    let recorded = rx.await.unwrap();
+    let matches: Vec<_> = recorded.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("x-foo")).collect();
+    assert_eq!(matches.len(), 1, "expected exactly one X-Foo header, got {matches:?}");
+    assert_eq!(matches[0].1, "req-value");
+}
