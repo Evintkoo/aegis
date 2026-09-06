@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/dast", "crates/collaborator"]
+members = ["crates/core", "crates/dast", "crates/collaborator", "crates/cve-lookup"]
 
 [package]
 name = "pentest"
