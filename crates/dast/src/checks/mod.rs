@@ -1,9 +1,12 @@
+pub mod cmdi;
 pub mod content_discovery;
 pub mod files;
 pub mod headers;
 pub mod nosqli;
 pub mod recon;
 pub mod sqli;
+pub mod ssti;
+pub mod traversal;
 
 #[cfg(test)]
 pub(crate) mod test_support;
