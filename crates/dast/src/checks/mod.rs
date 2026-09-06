@@ -5,6 +5,7 @@ pub mod files;
 pub mod headers;
 pub mod idor;
 pub mod ldap_injection;
+pub mod method_tampering;
 pub mod nosqli;
 pub mod recon;
 pub mod sqli;
@@ -12,6 +13,7 @@ pub mod ssti;
 pub mod traversal;
 pub mod xpath_injection;
 pub mod xss;
+pub mod xxe;
 
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -37,6 +39,18 @@ pub(crate) fn similarity(a: &str, b: &str) -> f64 {
     } else {
         a.len().min(b.len()) as f64 / m as f64
     }
+}
+
+/// The client's configured base URL with any query string and trailing
+/// slash stripped, e.g. `https://x.test/item?id=1` -> `https://x.test/item`.
+/// Ported from the one-liner (`client.base_url.split("?")[0].rstrip("/")`)
+/// that `cache_deception.py`, `info_disclosure.py`, and
+/// `method_tampering.py` each duplicate inline in Python -- factored out
+/// here the same way `similarity()` was, since three Rust check modules
+/// need it too. Distinct from `HttpClient::base_url_root()`, which drops
+/// the path entirely rather than just the query string.
+pub(crate) fn path_root(base_url: &str) -> String {
+    base_url.split('?').next().unwrap_or(base_url).trim_end_matches('/').to_string()
 }
 
 #[cfg(test)]
