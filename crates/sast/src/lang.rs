@@ -6,8 +6,6 @@
 //! module deliberately avoids (verified by independently compiling both
 //! against real `.ts`/`.tsx` fixtures, not just trusting the crate docs).
 
-#![allow(dead_code)] // ts_language()'s first real consumer is query_rules.rs in Task 3; from_path()'s is lib.rs's scan() in Task 4
-
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -21,6 +19,7 @@ pub enum Lang {
 }
 
 impl Lang {
+    #[allow(dead_code)] // first real (non-test) consumer is lib.rs's scan() in Task 4
     pub fn from_path(path: &Path) -> Option<Lang> {
         match path.extension().and_then(OsStr::to_str)? {
             "rs" => Some(Lang::Rust),
