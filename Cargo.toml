@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/core"]
+
+[package]
+name = "pentest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pentest-core = { path = "crates/core" }
+clap = { version = "4.6", features = ["derive"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros"] }
