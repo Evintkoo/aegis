@@ -10,7 +10,6 @@ pub struct RecordedRequest {
     pub path: String,
     pub query: HashMap<String, String>,
     pub headers: Vec<(String, String)>,
-    #[allow(dead_code)]
     pub body: String,
 }
 
