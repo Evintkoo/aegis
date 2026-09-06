@@ -44,6 +44,17 @@ impl HttpClient {
         &self.base_url
     }
 
+    /// Returns just `"{scheme}://{host}[:port]"` — no path or query —
+    /// for building absolute request URLs against other paths on the
+    /// same origin. Distinct from `base_url()`, which returns the raw
+    /// configured URL as-is (path/query included, if any).
+    pub fn base_url_root(&self) -> String {
+        match reqwest::Url::parse(&self.base_url) {
+            Ok(u) => format!("{}://{}", u.scheme(), u.authority()),
+            Err(_) => self.base_url.clone(),
+        }
+    }
+
     pub fn new(base_url: impl Into<String>, config: HttpClientConfig) -> Self {
         Self {
             base_url: base_url.into(),

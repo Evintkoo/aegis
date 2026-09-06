@@ -9,6 +9,12 @@ fn base_url_returns_the_configured_base_url() {
     assert_eq!(client.base_url(), "https://example.test");
 }
 
+#[test]
+fn base_url_root_strips_path_and_query_but_keeps_scheme_host_and_port() {
+    let client = HttpClient::new("https://x.test:8443/path?q=1", HttpClientConfig::default());
+    assert_eq!(client.base_url_root(), "https://x.test:8443");
+}
+
 #[tokio::test]
 async fn get_request_returns_status_and_body() {
     let (base_url, rx) = one_shot_server(TestResponse::ok("hello")).await;
