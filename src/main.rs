@@ -96,8 +96,8 @@ fn main() {
     let mods: Vec<&pentest_dast::CheckEntry> = pentest_dast::ALL
         .iter()
         .filter(|c| {
-            let in_only = cli.only.as_ref().map_or(true, |o| o.split(',').any(|n| n.trim() == c.name));
-            let in_skip = cli.skip.as_ref().map_or(false, |s| s.split(',').any(|n| n.trim() == c.name));
+            let in_only = cli.only.as_ref().is_none_or(|o| o.split(',').any(|n| n.trim() == c.name));
+            let in_skip = cli.skip.as_ref().is_some_and(|s| s.split(',').any(|n| n.trim() == c.name));
             in_only && !in_skip
         })
         .collect();
