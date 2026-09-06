@@ -1,6 +1,8 @@
+pub mod cache_deception;
 pub mod clickjacking;
 pub mod cmdi;
 pub mod content_discovery;
+pub mod cors_advanced;
 pub mod crlf;
 pub mod csrf;
 pub mod files;
