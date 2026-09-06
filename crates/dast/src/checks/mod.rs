@@ -16,7 +16,17 @@ pub mod xss;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-#[allow(dead_code)]
+/// Crude structural similarity of two response bodies, ported from the
+/// Python toolkit's `_sim()` (duplicated verbatim across 5 check modules
+/// there -- sqli/nosqli/ldap_injection/xpath_injection/idor): the ratio of
+/// the shorter length to the longer, used as a cheap "did the response
+/// change shape" signal for boolean-blind and behavior-change detection.
+/// Not a text-similarity algorithm -- matches the original's length-ratio
+/// heuristic exactly, including its blind spot (same-length,
+/// different-content bodies read as identical). Uses byte length rather
+/// than char count (Python's `len()` on `str` is a char count) -- for the
+/// near-entirely-ASCII HTML/JSON bodies these checks compare, the
+/// difference is immaterial to a coarse length-ratio signal.
 pub(crate) fn similarity(a: &str, b: &str) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 1.0;
