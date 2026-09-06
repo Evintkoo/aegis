@@ -7,6 +7,15 @@ fn fixture_dir(suffix: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Pulls the count out of the `"[*] SAST: N finding(s)"` line the binary
+/// prints for every `--src` run.
+fn sast_finding_count(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("[*] SAST: ").and_then(|rest| rest.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok()))
+        .unwrap_or_else(|| panic!("no '[*] SAST: N finding(s)' line found in stdout:\n{stdout}"))
+}
+
 /// Regression for the updated usage-error path: neither -u/--url nor --src
 /// given must still fail fast with exit code 2, and the message must name
 /// both flags now that either satisfies the requirement.
@@ -84,4 +93,44 @@ fn pure_dast_dry_run_without_src_stops_before_report_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("DRY RUN"));
     assert!(!stdout.contains("PENTEST REPORT"), "no report pipeline should run for a pure DAST dry-run");
+}
+
+/// B2 regression: running the binary twice against the same `--src`, with
+/// `--cve-dir` pointed inside that same `--src` tree, must not compound.
+/// Each run's finding (a hardcoded secret) gets written to a CVE record
+/// under `cve_dir`, embedding its evidence text; before the fix, the next
+/// run's SAST scan would walk into `cve_dir`, re-detect that embedded
+/// secret as a *new* finding, and write yet another record -- an
+/// unbounded self-scan feedback loop. `--no-osv` keeps this test isolated
+/// from the network-dependent CVE-matching path, which is unrelated to
+/// this bug.
+#[test]
+fn repeated_runs_with_cve_dir_inside_src_do_not_compound_findings() {
+    let dir = fixture_dir("cve-loop");
+    std::fs::write(dir.join(".env"), "api_key = \"sk_live_abcdefgh12345678\"\n").unwrap();
+    let cve_dir = dir.join("cve");
+
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_pentest"))
+            .arg("--src")
+            .arg(&dir)
+            .arg("--cve-dir")
+            .arg(&cve_dir)
+            .arg("--no-osv")
+            .output()
+            .expect("failed to run the pentest binary")
+    };
+
+    let first = run();
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    let first_count = sast_finding_count(&first_stdout);
+    assert!(first_count >= 1, "expected at least the hardcoded-secret finding on the first run, got:\n{first_stdout}");
+
+    let second = run();
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    let second_count = sast_finding_count(&second_stdout);
+
+    assert_eq!(first_count, second_count, "SAST finding count must not grow between runs\nfirst run:\n{first_stdout}\nsecond run:\n{second_stdout}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

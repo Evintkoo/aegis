@@ -53,6 +53,13 @@ pub fn all_rules() -> Vec<QueryRule> {
                         arguments: (arguments (binary_expression operator: "+"))
                         (#match? @method "^(query|execute)$")) @sink"#,
                 ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @method)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @method "^(query|execute)$")) @sink"#,
+                ),
             ],
         },
         QueryRule {
@@ -90,6 +97,15 @@ pub fn all_rules() -> Vec<QueryRule> {
                         (#match? @fn "^(eval|exec|execSync|execFile|execFileSync)$")) @sink"#,
                 ),
                 (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: [
+                          (identifier) @fn
+                          (member_expression property: (property_identifier) @fn)
+                        ]
+                        (#match? @fn "^(eval|exec|execSync|execFile|execFileSync)$")) @sink"#,
+                ),
+                (
                     Lang::Rust,
                     r#"(call_expression
                         function: (scoped_identifier name: (identifier) @method)
@@ -115,6 +131,18 @@ pub fn all_rules() -> Vec<QueryRule> {
                 ),
                 (
                     Lang::JavaScript,
+                    r#"(call_expression
+                        function: (identifier) @fn
+                        (#eq? @fn "unserialize")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (identifier) @fn
+                        (#eq? @fn "unserialize")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
                     r#"(call_expression
                         function: (identifier) @fn
                         (#eq? @fn "unserialize")) @sink"#,
@@ -151,6 +179,14 @@ pub fn all_rules() -> Vec<QueryRule> {
                         (#eq? @fn "createHash")
                         (#match? @alg "^(md5|sha1)$")) @sink"#,
                 ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (string (string_fragment) @alg))
+                        (#eq? @fn "createHash")
+                        (#match? @alg "^(md5|sha1)$")) @sink"#,
+                ),
             ],
         },
         QueryRule {
@@ -176,6 +212,13 @@ pub fn all_rules() -> Vec<QueryRule> {
                 ),
                 (
                     Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(readFile|readFileSync|writeFile|writeFileSync|createReadStream)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
                     r#"(call_expression
                         function: (member_expression property: (property_identifier) @fn)
                         arguments: (arguments (binary_expression operator: "+"))
@@ -438,5 +481,84 @@ mod tests {
     fn deserialize_does_not_flag_js_json_parse() {
         let findings = run("sast_unsafe_deserialize", Lang::JavaScript, "JSON.parse(data);");
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn deserialize_flags_ts_unserialize() {
+        let src = "const data: string = getData();\nunserialize(data);";
+        let findings = run("sast_unsafe_deserialize", Lang::TypeScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    // --- .tsx / Lang::Tsx coverage (bug fix: every rule's `queries` list
+    // previously had a Lang::TypeScript entry but no Lang::Tsx entry, so
+    // .tsx files got zero tree-sitter findings from any rule regardless of
+    // how vulnerable their code was -- LANGUAGE_TSX and LANGUAGE_TYPESCRIPT
+    // are genuinely distinct grammars, per lang.rs's own assert_ne! test).
+    // Each fixture includes a real JSX element (`<div>...</div>`) so it
+    // only parses cleanly under the TSX grammar, proving the Lang::Tsx
+    // query path itself rather than merely TS-compatible syntax.
+
+    #[test]
+    fn sqli_flags_tsx_string_concat_query() {
+        let src = "const el = <div>{1}</div>;\nconst id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = \" + id, cb);";
+        let findings = run("sast_sqli_concat", Lang::Tsx, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn sqli_does_not_flag_tsx_parameterized_query() {
+        let src = "const el = <div>{1}</div>;\nconst id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = ?\", [id], cb);";
+        let findings = run("sast_sqli_concat", Lang::Tsx, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn command_exec_flags_tsx_child_process_exec() {
+        let src = "const el = <div>{1}</div>;\nconst cmd: string = getCmd();\nchild_process.exec(cmd);";
+        let findings = run("sast_command_exec", Lang::Tsx, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn command_exec_does_not_flag_tsx_array_spawn() {
+        let src = "const el = <div>{1}</div>;\nconst args: string[] = ['-la'];\nspawn('ls', args);";
+        let findings = run("sast_command_exec", Lang::Tsx, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn weak_crypto_flags_tsx_create_hash_md5() {
+        let src = "const el = <div>{1}</div>;\nconst pw: string = getPassword();\ncrypto.createHash('md5').update(pw).digest('hex');";
+        let findings = run("sast_weak_crypto", Lang::Tsx, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn weak_crypto_does_not_flag_tsx_create_hash_sha256() {
+        let src = "const el = <div>{1}</div>;\nconst pw: string = getPassword();\ncrypto.createHash('sha256').update(pw).digest('hex');";
+        let findings = run("sast_weak_crypto", Lang::Tsx, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn path_traversal_flags_tsx_readfile_concat() {
+        let src = "const el = <div>{1}</div>;\nconst name: string = getName();\nfs.readFileSync(baseDir + '/' + name);";
+        let findings = run("sast_path_traversal", Lang::Tsx, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn path_traversal_does_not_flag_tsx_readfile_literal() {
+        let src = "const el = <div>{1}</div>;\nconst name: string = getName();\nfs.readFileSync('./static/report.txt');";
+        let findings = run("sast_path_traversal", Lang::Tsx, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn deserialize_flags_tsx_unserialize() {
+        let src = "const el = <div>{1}</div>;\nunserialize(data);";
+        let findings = run("sast_unsafe_deserialize", Lang::Tsx, src);
+        assert_eq!(findings.len(), 1);
     }
 }

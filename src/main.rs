@@ -214,7 +214,18 @@ fn main() {
     // Runs whenever --src is given, standalone or alongside -u.
     if let Some(src) = &cli.src {
         println!("[*] SAST scan: {src}");
-        let sast_findings = pentest_sast::scan(std::path::Path::new(src));
+        // Exclude this run's CVE output directory (if it already exists,
+        // e.g. from a prior run) from the scan by canonicalized path --
+        // never by name -- so a `cve/` directory under `--src` doesn't
+        // create a self-scan feedback loop: findings' evidence text (which
+        // can contain a raw secret) gets written there as JSON, which the
+        // secrets rule would otherwise re-detect on the next run, writing
+        // more records, compounding without bound. `canonicalize` fails
+        // when the directory doesn't exist yet (the common case for a
+        // fresh run, since it's created lazily on first write below) --
+        // that's not an error, it just means there's nothing to exclude.
+        let exclude: Vec<std::path::PathBuf> = std::fs::canonicalize(&cli.cve_dir).into_iter().collect();
+        let sast_findings = pentest_sast::scan(std::path::Path::new(src), &exclude);
         println!("[*] SAST: {} finding(s)", sast_findings.len());
         report.add(sast_findings);
     }
