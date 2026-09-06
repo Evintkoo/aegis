@@ -7,5 +7,5 @@ pub use record::{
     CveRecord, Description, ProblemType, ProblemTypeDescription, ProviderMetadata, Reference,
     LOCAL_ASSIGNER_ORG_ID, LOCAL_ID_PREFIX,
 };
-pub use shard::{record_path, thousands_bucket};
-pub use writer::CveWriter;
+pub use shard::{parse_cve_id, record_path, thousands_bucket};
+pub use writer::{CveWriter, InvalidCveId, WriteRealCveError};
