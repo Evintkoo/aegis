@@ -1,7 +1,7 @@
 use crate::opts::Opts;
 use crate::registry::CheckFuture;
 use pentest_core::{Finding, HttpClient, HttpRequest, Severity};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 use x509_parser::prelude::FromDer;
@@ -46,7 +46,15 @@ async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     }
 
     if let Some(host) = extract_host(client.base_url()) {
-        match inspect_tls(&host, 443) {
+        // `inspect_tls` does blocking socket I/O (a synchronous TCP connect plus a
+        // blocking rustls handshake loop) — running it directly on the async executor
+        // would risk stalling other concurrent checks sharing the same Tokio worker
+        // thread, so it's pushed onto Tokio's dedicated blocking thread pool. A `JoinError`
+        // here (task panic) degrades to an Info finding rather than propagating a panic.
+        let tls_result = tokio::task::spawn_blocking(move || inspect_tls(&host, 443))
+            .await
+            .unwrap_or_else(|e| Err(format!("TLS inspection task panicked: {e}")));
+        match tls_result {
             Ok((version, not_after, subject)) => {
                 // `rustls::ProtocolVersion`'s `{:?}` Debug output uses the enum's actual
                 // variant names (e.g. "TLSv1_3", "TLSv1_0", "SSLv3"), verified live against
@@ -82,6 +90,30 @@ fn extract_host(base_url: &str) -> Option<String> {
     Some(host_port.split(':').next()?.to_string())
 }
 
+/// Performs a raw TLS handshake against `host:port` directly via `rustls` (not
+/// `reqwest`, which doesn't expose the negotiated protocol version or peer
+/// certificate), returning `(protocol_version, cert_not_after, cert_subject)`.
+///
+/// This function does blocking I/O end-to-end (a synchronous `connect_timeout` plus a
+/// blocking read/write handshake loop) — callers must run it via
+/// `tokio::task::spawn_blocking`, not directly on an async executor.
+///
+/// ### Weak-TLS-version detection is effectively unreachable against real servers
+///
+/// `rustls`'s client deliberately does not implement TLS 1.0, TLS 1.1, or SSLv3/SSLv2
+/// at all (per rustls's own documentation, it speaks only TLS 1.2 and 1.3) — this is
+/// not a default that can be misconfigured, it's simply absent from the protocol
+/// state machine. A server that only offers a legacy protocol therefore cannot be
+/// "negotiated down to" here: the handshake fails outright (surfaced by the caller as
+/// a generic Info-severity "TLS inspection failed" finding), rather than succeeding
+/// with a legacy `protocol_version()` that would trip the "Weak TLS version
+/// negotiated" Medium-severity match arm below. That arm is kept for
+/// defense-in-depth (e.g. a future rustls version, or a different `ClientConfig`,
+/// that does support negotiating legacy versions) but should not be relied on to
+/// flag legacy-TLS-only targets today. This differs from Python's OpenSSL-backed
+/// `ssl` module, which even in modern versions can still be forced to negotiate a
+/// legacy protocol purely for detection purposes — there is no equivalent escape
+/// hatch in `rustls`.
 fn inspect_tls(host: &str, port: u16) -> Result<(String, String, String), String> {
     let root_store = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let config = rustls::ClientConfig::builder()
@@ -92,7 +124,14 @@ fn inspect_tls(host: &str, port: u16) -> Result<(String, String, String), String
         .map_err(|e| format!("invalid hostname: {e}"))?;
     let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)
         .map_err(|e| format!("TLS setup failed: {e}"))?;
-    let mut sock = TcpStream::connect((host, port)).map_err(|e| format!("TCP connect failed: {e}"))?;
+
+    let addr = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("DNS resolution failed: {e}"))?
+        .next()
+        .ok_or_else(|| format!("no addresses found for {host}"))?;
+    let mut sock = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+        .map_err(|e| format!("TCP connect failed: {e}"))?;
     sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
     sock.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
@@ -134,5 +173,25 @@ mod tests {
     #[test]
     fn extract_host_returns_none_for_http() {
         assert_eq!(extract_host("http://example.test/path"), None);
+    }
+
+    // Regression test for the connect timeout: 10.255.255.1 is a private (RFC 1918),
+    // non-routable address, so `to_socket_addrs` resolves it locally (no real DNS
+    // lookup) and the subsequent `connect_timeout` either fails fast (network
+    // unreachable) or, if silently black-holed by the local network stack, is
+    // bounded by the 10s timeout instead of hanging indefinitely on the bare
+    // `TcpStream::connect` this replaced. Either way the call must return well
+    // inside the timeout window, not hang.
+    #[test]
+    fn inspect_tls_bounds_a_hanging_connect_with_the_configured_timeout() {
+        let start = std::time::Instant::now();
+        let result = inspect_tls("10.255.255.1", 443);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "expected the non-routable address to fail, got {result:?}");
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "connect_timeout did not bound the call: took {elapsed:?}"
+        );
     }
 }

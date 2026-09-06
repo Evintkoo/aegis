@@ -9,6 +9,7 @@ regex = "1"
 reqwest = "0.13"
 rustls = "0.23"
 rustls-pki-types = "1.15"
+tokio = { version = "1.53", features = ["rt"] }
 webpki-roots = "1.0"
 x509-parser = "0.18"
 
