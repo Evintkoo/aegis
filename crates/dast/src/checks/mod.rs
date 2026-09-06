@@ -1,4 +1,5 @@
 pub mod cmdi;
+pub mod crlf;
 pub mod content_discovery;
 pub mod files;
 pub mod headers;
@@ -7,6 +8,7 @@ pub mod recon;
 pub mod sqli;
 pub mod ssti;
 pub mod traversal;
+pub mod xss;
 
 #[cfg(test)]
 pub(crate) mod test_support;
