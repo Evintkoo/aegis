@@ -1,8 +1,11 @@
 pub mod cmdi;
+pub mod clickjacking;
 pub mod content_discovery;
 pub mod crlf;
+pub mod csrf;
 pub mod files;
 pub mod headers;
+pub mod host_header;
 pub mod idor;
 pub mod ldap_injection;
 pub mod method_tampering;
