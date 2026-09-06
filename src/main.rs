@@ -152,8 +152,10 @@ fn main() {
     report.print_console();
 
     if let Some(path) = &cli.json_out {
-        std::fs::write(path, report.to_json()).expect("failed to write JSON report");
-        println!("\n[+] JSON report written to {path}");
+        match std::fs::write(path, report.to_json()) {
+            Ok(()) => println!("\n[+] JSON report written to {path}"),
+            Err(e) => eprintln!("warning: failed to write JSON report: {e}"),
+        }
     }
 
     if let Some(path) = &cli.html_out {
@@ -162,14 +164,19 @@ fn main() {
             ("Checks run".to_string(), mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")),
             ("Findings".to_string(), report.findings.len().to_string()),
         ];
-        std::fs::write(path, report.to_html(&meta)).expect("failed to write HTML report");
-        println!("[+] HTML report written to {path}");
+        match std::fs::write(path, report.to_html(&meta)) {
+            Ok(()) => println!("[+] HTML report written to {path}"),
+            Err(e) => eprintln!("warning: failed to write HTML report: {e}"),
+        }
     }
 
-    if let Ok(writer) = CveWriter::new(&cli.cve_dir, cli.year) {
-        if let Err(e) = report.write_cve_records(&writer) {
-            eprintln!("warning: failed to write CVE records: {e}");
+    match CveWriter::new(&cli.cve_dir, cli.year) {
+        Ok(writer) => {
+            if let Err(e) = report.write_cve_records(&writer) {
+                eprintln!("warning: failed to write CVE records: {e}");
+            }
         }
+        Err(e) => eprintln!("warning: failed to initialize CVE writer: {e}"),
     }
 
     let severe = report
