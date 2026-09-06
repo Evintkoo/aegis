@@ -3,8 +3,6 @@
 //! project's existing pragmatic style (`discovery.rs`'s marker-list
 //! approach to unsafe-path skipping, not a robots.txt engine).
 
-#![allow(dead_code)] // first real (non-test) consumer is lib.rs's scan() in Task 4
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

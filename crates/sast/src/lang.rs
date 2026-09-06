@@ -19,7 +19,6 @@ pub enum Lang {
 }
 
 impl Lang {
-    #[allow(dead_code)] // first real (non-test) consumer is lib.rs's scan() in Task 4
     pub fn from_path(path: &Path) -> Option<Lang> {
         match path.extension().and_then(OsStr::to_str)? {
             "rs" => Some(Lang::Rust),

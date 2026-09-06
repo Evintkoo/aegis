@@ -10,8 +10,6 @@
 //! and noisy there; Rust gets its own command-exec pattern instead, via
 //! `Command::new("sh"/"bash"/...)`).
 
-#![allow(dead_code)] // first real (non-test) consumer is lib.rs's scan() in Task 4
-
 use crate::lang::Lang;
 use pentest_core::{Finding, Severity};
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
