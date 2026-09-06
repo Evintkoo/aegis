@@ -15,7 +15,7 @@ const TITLE: &str = "Hardcoded secret";
 const REMEDIATION: &str = "Remove the secret from source, rotate it, and load it from an environment variable or secrets manager instead.";
 
 // Deliberately no leading `\b` before the key-name alternation: a real
-// secret is just as often named `DATABASE_PASSWORD` or `STRIPE_SECRET_KEY`
+// secret is just as often named `DATABASE_PASSWORD` or `APP_API_KEY`
 // as bare `password`, and `\b` cannot match between the `_` and `P` in
 // `DATABASE_PASSWORD` (both are word characters) -- confirmed by a real
 // failing fixture during prototyping (`DATABASE_PASSWORD = "..."` went
