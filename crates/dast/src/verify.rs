@@ -139,6 +139,7 @@ pub fn remediation_for(check_name: &str) -> &'static str {
         "recon" => "Suppress version banners; disable unneeded HTTP methods; keep TLS modern.",
         "auth_bruteforce" => "Add rate limiting + lockout/CAPTCHA and uniform error messages to prevent enumeration.",
         "files" => "Remove or block access to exposed sensitive files; disable directory listing.",
+        "cve-match" => "Upgrade the affected component to a fixed version.",
         _ => "",
     }
 }
@@ -212,6 +213,9 @@ mod tests {
     fn remediation_for_known_check_is_non_empty() {
         assert!(!remediation_for("sqli").is_empty());
         assert!(!remediation_for("recon").is_empty());
+        // A matched real CVE finding must render with a non-empty
+        // remediation field too, like every other check.
+        assert!(!remediation_for("cve-match").is_empty());
     }
 
     #[test]

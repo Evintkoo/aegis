@@ -27,6 +27,12 @@ impl std::error::Error for InvalidCveId {}
 #[derive(Debug)]
 pub enum WriteRealCveError {
     InvalidId(InvalidCveId),
+    /// The fetched record's top-level JSON value isn't an object (e.g. an
+    /// array, string, number, or bool) -- indexing into it to attach our
+    /// own `adp` container entry isn't possible without either panicking
+    /// or silently discarding the record's own shape, so this is surfaced
+    /// as an error instead.
+    NotAnObject,
     Json(serde_json::Error),
     Io(io::Error),
 }
@@ -35,6 +41,7 @@ impl std::fmt::Display for WriteRealCveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidId(e) => write!(f, "{e}"),
+            Self::NotAnObject => write!(f, "fetched CVE record is not a JSON object"),
             Self::Json(e) => write!(f, "failed to serialize CVE record: {e}"),
             Self::Io(e) => write!(f, "failed to write CVE record: {e}"),
         }
@@ -131,7 +138,16 @@ impl CveWriter {
             // The fetched record's own shape is unexpected/malformed --
             // still write it verbatim rather than dropping it, but ensure
             // our own detection context is never silently lost either.
+            // `serde_json`'s `IndexMut<&str>` promotes `Value::Null` to an
+            // object automatically but PANICS for any other non-object
+            // top-level shape (array/string/number/bool) when indexed. We
+            // reject every non-object shape here (Null included) rather
+            // than relying on that promotion -- a record that isn't an
+            // object to begin with was never a meaningful CVE record.
             None => {
+                if !record_json.is_object() {
+                    return Err(WriteRealCveError::NotAnObject);
+                }
                 record_json["containers"] = serde_json::json!({ "adp": [adp_entry] });
             }
         }
@@ -160,6 +176,12 @@ impl CveWriter {
     pub fn write_native_advisory(&self, native_id: &str, year: u32, record_json: &serde_json::Value, x_pentest_context: serde_json::Value) -> io::Result<PathBuf> {
         if native_id.is_empty() || !native_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("not a filename-safe advisory ID: {native_id}")));
+        }
+        // Same panic shape as `write_real_cve`'s `containers` indexing:
+        // `out["x_pentest"] = ...` below would panic if `record_json` isn't
+        // a JSON object at the top level (array/string/number/bool).
+        if !record_json.is_object() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("advisory record for {native_id} is not a JSON object")));
         }
 
         let mut out = record_json.clone();
@@ -283,6 +305,17 @@ mod tests {
     }
 
     #[test]
+    fn write_real_cve_returns_an_error_instead_of_panicking_on_a_non_object_record() {
+        // `serde_json`'s `IndexMut<&str>` panics when indexing into a
+        // top-level array (or string/number/bool) -- this must be a
+        // graceful, specific error instead.
+        let dir = temp_test_dir();
+        let writer = CveWriter::new(&dir, 2026).unwrap();
+        let result = writer.write_real_cve("CVE-2021-44228", serde_json::json!([1, 2, 3]), serde_json::json!({}));
+        assert!(matches!(result, Err(WriteRealCveError::NotAnObject)));
+    }
+
+    #[test]
     fn write_native_advisory_files_under_year_other_native_id() {
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
@@ -302,5 +335,18 @@ mod tests {
         let writer = CveWriter::new(&dir, 2026).unwrap();
         let result = writer.write_native_advisory("../../etc/passwd", 2024, &serde_json::json!({}), serde_json::json!({}));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn write_native_advisory_returns_an_error_instead_of_panicking_on_a_non_object_record() {
+        // `out["x_pentest"] = ...` would panic if `record_json` is a
+        // top-level array (or string/number/bool) -- this must be a
+        // graceful `io::Error` instead.
+        let dir = temp_test_dir();
+        let writer = CveWriter::new(&dir, 2026).unwrap();
+        let result = writer.write_native_advisory("GHSA-r9p9-mrjm-926w", 2024, &serde_json::json!([1, 2, 3]), serde_json::json!({}));
+        let err = result.expect_err("a non-object record must not panic");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("not a JSON object"), "unexpected error message: {err}");
     }
 }

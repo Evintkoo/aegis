@@ -344,7 +344,7 @@ fn main() {
     let osv_enabled = !cli.no_osv;
     if let Some(writer) = &cve_writer {
         if osv_enabled || cli.nvd_api_key.is_some() {
-            let lookup_opts = LookupOpts { osv_enabled, nvd_api_key: cli.nvd_api_key.clone(), ..LookupOpts::default() };
+            let lookup_opts = LookupOpts { osv_enabled, nvd_api_key: cli.nvd_api_key.clone(), ..LookupOpts::enabled() };
             let matched_findings = rt.block_on(enrich_findings(&report.findings, writer, &lookup_opts, cli.year));
             report.add(matched_findings);
         }
