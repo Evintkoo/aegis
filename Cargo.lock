@@ -936,6 +936,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pentest-core",
+ "pentest-cve-lookup",
  "pentest-dast",
  "reqwest",
  "serde_json",

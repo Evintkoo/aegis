@@ -1,6 +1,7 @@
 use clap::Parser;
 use pentest_core::cve::CveWriter;
 use pentest_core::{Finding, HttpClient, HttpClientConfig, Report, Severity};
+use pentest_cve_lookup::{enrich_findings, LookupOpts, CVE_MATCH_CHECK};
 use pentest_dast::{discover, verify, DiscoveryOpts, DiscoverySource, MineMode, Opts};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -133,6 +134,20 @@ struct Cli {
     /// Bad-login attempts (max 5)
     #[arg(long, default_value_t = 4)]
     auth_attempts: u64,
+
+    /// Real CVE matching via OSV.dev (on by default; accepted for
+    /// symmetry with --no-osv, matching Python's --foo/--no-foo
+    /// argparse convention -- it's a no-op since true is already default)
+    #[arg(long)]
+    osv: bool,
+
+    /// Disable OSV.dev CVE matching
+    #[arg(long)]
+    no_osv: bool,
+
+    /// Enable NVD enrichment for infra/banner matches (default: off)
+    #[arg(long)]
+    nvd_api_key: Option<String>,
 }
 
 /// Suppresses "... check skipped — no --param" style info noise, matching
@@ -305,6 +320,36 @@ fn main() {
         }
     }
 
+    let cve_writer = match CveWriter::new(&cli.cve_dir, cli.year) {
+        Ok(w) => Some(w),
+        Err(e) => {
+            eprintln!("warning: failed to initialize CVE writer: {e}");
+            None
+        }
+    };
+
+    // Real CVE/advisory matching (opt-in per-source: --no-osv turns off
+    // OSV.dev, --nvd-api-key turns on NVD; both independently controlled,
+    // matching the design spec's flag table). `enrich_findings` scans for
+    // a `component/version`-shaped banner (currently only `recon`'s
+    // "<Header> header exposed" findings carry one), looks each up, and
+    // writes any match's real-or-native record to disk. OSV.dev has no
+    // ecosystem for arbitrary infra software, so this is expected to
+    // reliably return no OSV hits for banner-derived fingerprints -- real
+    // detection for THIS signal type comes from NVD's keywordSearch, per
+    // the spec's own rationale for why NVD exists alongside OSV. OSV is
+    // still queried regardless (harmless: an unmatched ecosystem is
+    // treated the same as "no match"), so a future fingerprint source
+    // that DOES know a real OSV ecosystem benefits with no changes here.
+    let osv_enabled = !cli.no_osv;
+    if let Some(writer) = &cve_writer {
+        if osv_enabled || cli.nvd_api_key.is_some() {
+            let lookup_opts = LookupOpts { osv_enabled, nvd_api_key: cli.nvd_api_key.clone(), ..LookupOpts::default() };
+            let matched_findings = rt.block_on(enrich_findings(&report.findings, writer, &lookup_opts, cli.year));
+            report.add(matched_findings);
+        }
+    }
+
     if !cli.no_exploit {
         println!("[*] Verifying findings (confidence, PoC)...");
     }
@@ -341,13 +386,18 @@ fn main() {
         }
     }
 
-    match CveWriter::new(&cli.cve_dir, cli.year) {
-        Ok(writer) => {
-            if let Err(e) = report.write_cve_records(&writer) {
-                eprintln!("warning: failed to write CVE records: {e}");
-            }
+    // `cve-match` findings already got their own real-CVE/native-advisory
+    // record written above via write_real_cve/write_native_advisory -- a
+    // self-discovered local PENTEST-LOCAL-* record here would be a
+    // fabricated ID competing with the real one, which the spec's
+    // non-goals explicitly forbid. Everything else still gets its usual
+    // local record.
+    if let Some(writer) = &cve_writer {
+        let mut local_only = Report::new();
+        local_only.add(report.findings.iter().filter(|f| f.check != CVE_MATCH_CHECK).cloned().collect());
+        if let Err(e) = local_only.write_cve_records(writer) {
+            eprintln!("warning: failed to write CVE records: {e}");
         }
-        Err(e) => eprintln!("warning: failed to initialize CVE writer: {e}"),
     }
 
     let severe = report
