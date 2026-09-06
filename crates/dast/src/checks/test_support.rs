@@ -25,7 +25,6 @@ impl ScriptedResponse {
         Self { status: 200, headers: vec![], body: body.into(), delay_ms: 0 }
     }
 
-    #[allow(dead_code)]
     pub fn with_status(status: u16, body: impl Into<String>) -> Self {
         Self { status, headers: vec![], body: body.into(), delay_ms: 0 }
     }

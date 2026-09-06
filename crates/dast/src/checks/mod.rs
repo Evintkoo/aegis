@@ -3,11 +3,14 @@ pub mod content_discovery;
 pub mod crlf;
 pub mod files;
 pub mod headers;
+pub mod idor;
+pub mod ldap_injection;
 pub mod nosqli;
 pub mod recon;
 pub mod sqli;
 pub mod ssti;
 pub mod traversal;
+pub mod xpath_injection;
 pub mod xss;
 
 #[cfg(test)]
