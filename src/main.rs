@@ -97,6 +97,49 @@ struct Cli {
     /// dependency to compute "now" from; override for cross-year runs)
     #[arg(long, default_value_t = 2026)]
     year: u32,
+
+    /// A URL you monitor, for out-of-band SSRF confirmation
+    #[arg(long)]
+    ssrf_callback: Option<String>,
+
+    /// Base URL of a running pentest-collaborator listener, for blind OOB checks
+    #[arg(long)]
+    collaborator: Option<String>,
+
+    /// Also run installed sqlmap/nikto/nuclei
+    #[arg(long)]
+    external: bool,
+
+    /// Login endpoint (enables auth_bruteforce)
+    #[arg(long)]
+    login_url: Option<String>,
+
+    /// A username you own that exists (for enumeration test)
+    #[arg(long)]
+    auth_username: Option<String>,
+
+    /// Login username field name
+    #[arg(long, default_value = "username")]
+    user_field: String,
+
+    /// Login password field name
+    #[arg(long, default_value = "password")]
+    pass_field: String,
+
+    /// Send login as JSON instead of form
+    #[arg(long)]
+    auth_json: bool,
+
+    /// Bad-login attempts (max 5)
+    #[arg(long, default_value_t = 4)]
+    auth_attempts: u64,
+}
+
+/// Suppresses "... check skipped — no --param" style info noise, matching
+/// `run_all.py`'s `_is_skip_notice`. `jwt` is currently the only check
+/// that emits this shape of finding.
+fn is_skip_notice(f: &Finding) -> bool {
+    f.severity == Severity::Info && f.title.to_lowercase().contains("skip")
 }
 
 fn parse_headers(items: &[String]) -> HashMap<String, String> {
@@ -162,7 +205,28 @@ fn main() {
         ..HttpClientConfig::default()
     };
     let client = HttpClient::new(url.clone(), config);
-    let base_opts = Opts { wordlist: cli.wordlist.clone(), sleep: cli.sleep, ..Opts::default() };
+    // Carries every opt-in/logic-check field alongside param/method so
+    // site checks see the same shared opts Python's run_all.py builds
+    // once and reuses everywhere -- ssrf/redirect/blind_oob (site checks
+    // that opportunistically use opts.param when present) previously saw
+    // neither -p nor --method during the site-checks phase, a gap that
+    // stayed invisible until these checks existed.
+    let base_opts = Opts {
+        param: cli.param.clone(),
+        method: cli.method.clone(),
+        wordlist: cli.wordlist.clone(),
+        sleep: cli.sleep,
+        ssrf_callback: cli.ssrf_callback.clone(),
+        collaborator: cli.collaborator.clone(),
+        external: cli.external,
+        login_url: cli.login_url.clone(),
+        auth_username: cli.auth_username.clone(),
+        user_field: cli.user_field.clone(),
+        pass_field: cli.pass_field.clone(),
+        auth_json: cli.auth_json,
+        auth_attempts: cli.auth_attempts,
+        ..Opts::default()
+    };
 
     let rt = tokio::runtime::Runtime::new().expect("failed to start async runtime");
     let mut report = Report::new();
@@ -171,7 +235,7 @@ fn main() {
     let before = report.findings.len();
     for m in &site_mods {
         let findings = rt.block_on((m.run)(&client, &base_opts));
-        report.add(findings);
+        report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
     }
     for f in report.findings.iter_mut().skip(before) {
         if f.url.is_empty() {
@@ -190,7 +254,7 @@ fn main() {
             let before = report.findings.len();
             for m in &param_mods {
                 let findings = rt.block_on((m.run)(&client, &opts));
-                report.add(findings);
+                report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
             }
             for f in report.findings.iter_mut().skip(before) {
                 f.url = url.clone();
@@ -227,7 +291,7 @@ fn main() {
                 let before = report.findings.len();
                 for m in &param_mods {
                     let findings = rt.block_on((m.run)(&tclient, &topts));
-                    report.add(findings);
+                    report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
                 }
                 for f in report.findings.iter_mut().skip(before) {
                     f.url = t.url.clone();
