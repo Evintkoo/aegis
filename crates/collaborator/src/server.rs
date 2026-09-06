@@ -93,7 +93,7 @@ impl Collaborator {
             return;
         }
 
-        let seg = path.trim_start_matches('/').split('/').next().unwrap_or("");
+        let seg = path.trim_start_matches('/').split('/').next().unwrap_or("").split('?').next().unwrap_or("");
         let token = if seg.is_empty() { "_".to_string() } else { seg.to_string() };
         let hit = Hit {
             ts: self.start.elapsed().as_secs_f64(),
@@ -199,5 +199,17 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         assert_eq!(collab.hits_for("_").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn strips_a_trailing_query_string_from_the_bucketing_token() {
+        let (collab, base) = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        client.get(format!("{base}/abc123?cachebust=1")).send().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let hits = collab.hits_for("abc123");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "/abc123?cachebust=1"); // full path is still recorded verbatim on the Hit
     }
 }
