@@ -8,8 +8,8 @@ pub use response::HttpResponse;
 
 use reqwest::Url;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug)]
 pub struct HttpClientConfig {
@@ -112,19 +112,12 @@ impl HttpClient {
     }
 
     async fn rate_limit(&self) {
-        let wait = {
-            let last = *self.last.lock().unwrap();
-            let elapsed = last.elapsed();
-            if elapsed < self.delay {
-                Some(self.delay - elapsed)
-            } else {
-                None
-            }
-        };
-        if let Some(w) = wait {
-            tokio::time::sleep(w).await;
+        let mut last = self.last.lock().await;
+        let elapsed = last.elapsed();
+        if elapsed < self.delay {
+            tokio::time::sleep(self.delay - elapsed).await;
         }
-        *self.last.lock().unwrap() = Instant::now();
+        *last = Instant::now();
     }
 }
 

@@ -40,8 +40,7 @@ impl Report {
         for f in self.sorted() {
             println!("{}", f.line());
             if !f.evidence.is_empty() {
-                let ev = if f.evidence.len() < 200 { f.evidence.clone() } else { format!("{}…", &f.evidence[..200]) };
-                println!("           evidence   : {ev}");
+                println!("           evidence   : {}", truncate_evidence(&f.evidence));
             }
             if !f.proof.is_empty() {
                 println!("           PROOF      : {}", f.proof);
@@ -108,6 +107,18 @@ impl Report {
     }
 }
 
+/// Truncates evidence to at most 200 chars, always cutting on a char
+/// boundary so multi-byte UTF-8 sequences (attacker-controlled evidence
+/// from HTTP response bodies) can never trigger a byte-index panic.
+fn truncate_evidence(evidence: &str) -> String {
+    if evidence.chars().count() < 200 {
+        evidence.to_string()
+    } else {
+        let truncated: String = evidence.chars().take(200).collect();
+        format!("{truncated}…")
+    }
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -157,6 +168,37 @@ mod tests {
         let r = Report::new();
         let html = r.to_html(&[]);
         assert!(html.contains("No findings"));
+    }
+
+    #[test]
+    fn truncate_evidence_cuts_on_a_char_boundary_for_multibyte_input() {
+        // "€" is 3 bytes in UTF-8, so byte offset 200 (not a multiple of 3)
+        // falls squarely inside the 67th character — exactly the case
+        // where `&s[..200]` panics with "byte index 200 is not a char
+        // boundary". chars().count() == 250 here, distinct from the byte
+        // length (750), so this genuinely exercises the multi-byte path
+        // (a 2-byte char like "é" would coincidentally still be a boundary
+        // at offset 200, since 200 is a multiple of 2 — it must be a width
+        // that does *not* evenly divide 200).
+        let evidence = "€".repeat(250);
+        assert_eq!(evidence.chars().count(), 250);
+        assert_ne!(evidence.chars().count(), evidence.len());
+        assert_ne!(200 % "€".len(), 0);
+
+        let truncated = truncate_evidence(&evidence);
+
+        assert_eq!(truncated.chars().count(), 201); // 200 chars + the "…" marker
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.starts_with(&"€".repeat(200)));
+    }
+
+    #[test]
+    fn print_console_does_not_panic_on_multibyte_evidence() {
+        let mut r = Report::new();
+        r.add(vec![finding(Severity::High, "x").with_evidence("€".repeat(250))]);
+        // Regression test for the byte-index-200 char-boundary panic:
+        // this must not panic even though byte 200 falls mid-character.
+        r.print_console();
     }
 
     #[test]

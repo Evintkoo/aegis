@@ -91,3 +91,41 @@ async fn second_request_on_the_same_client_is_rate_limited() {
 
     assert!(start.elapsed() >= std::time::Duration::from_millis(200));
 }
+
+#[tokio::test]
+async fn concurrent_requests_on_the_same_client_are_serialized_by_the_rate_limiter() {
+    let (base_url_prime, rx_prime) = one_shot_server(TestResponse::ok("zero")).await;
+    let (base_url_a, rx_a) = one_shot_server(TestResponse::ok("one")).await;
+    let (base_url_b, rx_b) = one_shot_server(TestResponse::ok("two")).await;
+
+    let config = HttpClientConfig { delay: std::time::Duration::from_millis(200), ..HttpClientConfig::default() };
+    let client = HttpClient::new(base_url_prime, config);
+
+    // Prime the client so `last` is fresh going into the timed section below:
+    // every request from here on must actually wait out the full delay,
+    // rather than the very first call on a client getting a free pass.
+    client.request(HttpRequest::get()).await.unwrap();
+    let _ = rx_prime.await.unwrap();
+
+    let start = std::time::Instant::now();
+    // Fire two requests concurrently on the same primed client. If the rate
+    // limiter drops its lock before sleeping (the bug), both calls read the
+    // same stale `last`, both compute ~the same wait, and both sleep in
+    // parallel — the pair finishes in about one delay period. A rate
+    // limiter that holds the lock across the sleep forces the second call
+    // to queue behind the first, so the pair must span roughly two delay
+    // periods back-to-back.
+    let (r1, r2) = tokio::join!(
+        client.request(HttpRequest::get().url(base_url_a)),
+        client.request(HttpRequest::get().url(base_url_b))
+    );
+    r1.unwrap();
+    r2.unwrap();
+    let _ = rx_a.await.unwrap();
+    let _ = rx_b.await.unwrap();
+
+    // Two genuinely serialized 200ms waits take close to 400ms; a racy
+    // limiter that lets both fire after a single shared wait finishes
+    // close to 200ms. 350ms cleanly separates the two.
+    assert!(start.elapsed() >= std::time::Duration::from_millis(350));
+}

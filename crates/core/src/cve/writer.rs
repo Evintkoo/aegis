@@ -53,8 +53,7 @@ impl CveWriter {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(&record)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(&record).map_err(io::Error::other)?;
         fs::write(&path, json)?;
         Ok(path)
     }
