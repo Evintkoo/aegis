@@ -7,7 +7,6 @@ use tokio::net::TcpListener;
 
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
-    #[allow(dead_code)]
     pub path: String,
     pub query: HashMap<String, String>,
     pub headers: Vec<(String, String)>,

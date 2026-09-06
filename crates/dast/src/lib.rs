@@ -1,5 +1,6 @@
 pub mod all;
 pub mod checks;
+pub mod discovery;
 pub mod opts;
 pub mod registry;
 pub mod verify;
