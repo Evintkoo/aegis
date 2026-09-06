@@ -1,4 +1,5 @@
 pub mod confidence;
+pub mod cve;
 pub mod finding;
 pub mod http;
 pub mod report;

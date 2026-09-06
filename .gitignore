@@ -9,7 +9,7 @@ __pycache__/
 /target/
 
 # Scan output — reports and generated CVE records are run artifacts, not source
-cve/
+/cve/
 *.report.html
 *.report.json
 turboly.html
