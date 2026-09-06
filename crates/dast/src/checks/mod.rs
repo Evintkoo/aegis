@@ -7,6 +7,7 @@ pub mod content_discovery;
 pub mod cors_advanced;
 pub mod crlf;
 pub mod csrf;
+pub mod external;
 pub mod files;
 pub mod graphql;
 pub mod headers;
