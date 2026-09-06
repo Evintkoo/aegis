@@ -44,14 +44,22 @@ impl HttpClient {
         &self.base_url
     }
 
-    /// Returns just `"{scheme}://{host}[:port]"` — no path or query —
-    /// for building absolute request URLs against other paths on the
-    /// same origin. Distinct from `base_url()`, which returns the raw
-    /// configured URL as-is (path/query included, if any).
+    /// Looks up a configured client-level header by name, case-insensitively.
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
 
+    /// All configured client-level headers -- checks that must scan every
+    /// supplied header (e.g. `jwt`, hunting any header for a bearer token)
+    /// need the full set, not a single by-name lookup.
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
+    }
+
+    /// Returns just `"{scheme}://{host}[:port]"` — no path or query —
+    /// for building absolute request URLs against other paths on the
+    /// same origin. Distinct from `base_url()`, which returns the raw
+    /// configured URL as-is (path/query included, if any).
     pub fn base_url_root(&self) -> String {
         match reqwest::Url::parse(&self.base_url) {
             Ok(u) => format!("{}://{}", u.scheme(), u.authority()),
@@ -91,6 +99,8 @@ impl HttpClient {
             builder = builder.json(json);
         } else if !req.form.is_empty() {
             builder = builder.form(&req.form);
+        } else if let Some(body) = &req.raw_body {
+            builder = builder.body(body.clone());
         }
 
         let start = Instant::now();

@@ -8,6 +8,13 @@ pub struct HttpRequest {
     pub params: HashMap<String, String>,
     pub form: HashMap<String, String>,
     pub json: Option<serde_json::Value>,
+    /// A literal request body sent as-is (no form-urlencoding, no JSON
+    /// serialization). Needed by checks that must send a raw payload --
+    /// an XML document (`xxe`), or arbitrary probe bytes
+    /// (`method_tampering`'s PUT/method-override probes) -- matching the
+    /// Python originals' `data=<bytes>` calls, which bypass `common.py`'s
+    /// own form/JSON encoding the same way.
+    pub raw_body: Option<Vec<u8>>,
     pub headers: HashMap<String, String>,
     pub allow_redirects: bool,
 }
@@ -20,6 +27,7 @@ impl HttpRequest {
             params: HashMap::new(),
             form: HashMap::new(),
             json: None,
+            raw_body: None,
             headers: HashMap::new(),
             allow_redirects: true,
         }
@@ -49,6 +57,11 @@ impl HttpRequest {
 
     pub fn json(mut self, v: serde_json::Value) -> Self {
         self.json = Some(v);
+        self
+    }
+
+    pub fn raw_body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.raw_body = Some(body.into());
         self
     }
 

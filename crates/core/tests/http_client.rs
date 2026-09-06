@@ -167,3 +167,44 @@ async fn request_level_header_overrides_client_level_header_of_the_same_name() {
     assert_eq!(matches.len(), 1, "expected exactly one X-Foo header, got {matches:?}");
     assert_eq!(matches[0].1, "req-value");
 }
+
+#[test]
+fn headers_exposes_every_configured_client_header() {
+    let mut config = HttpClientConfig::default();
+    config.headers.insert("Authorization".to_string(), "Bearer abc".to_string());
+    config.headers.insert("X-Test".to_string(), "abc".to_string());
+    let client = HttpClient::new("https://example.test", config);
+
+    let all = client.headers();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get("Authorization").map(String::as_str), Some("Bearer abc"));
+    assert_eq!(all.get("X-Test").map(String::as_str), Some("abc"));
+}
+
+#[tokio::test]
+async fn raw_body_is_sent_verbatim_without_form_encoding() {
+    let (base_url, rx) = one_shot_server(TestResponse::ok("ok")).await;
+    let client = HttpClient::new(base_url, HttpClientConfig::default());
+
+    client
+        .request(HttpRequest::post().raw_body(b"<doc>&xxe;</doc>".to_vec()).header("Content-Type", "application/xml"))
+        .await
+        .unwrap();
+
+    let recorded = rx.await.unwrap();
+    assert_eq!(recorded.body, "<doc>&xxe;</doc>");
+}
+
+#[tokio::test]
+async fn raw_body_is_ignored_when_json_is_also_set() {
+    let (base_url, rx) = one_shot_server(TestResponse::ok("ok")).await;
+    let client = HttpClient::new(base_url, HttpClientConfig::default());
+
+    client
+        .request(HttpRequest::post().json(serde_json::json!({"a": 1})).raw_body(b"ignored".to_vec()))
+        .await
+        .unwrap();
+
+    let recorded = rx.await.unwrap();
+    assert_eq!(recorded.body, r#"{"a":1}"#);
+}
