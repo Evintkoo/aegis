@@ -915,6 +915,7 @@ dependencies = [
  "clap",
  "pentest-core",
  "pentest-dast",
+ "reqwest",
  "serde_json",
  "tokio",
 ]
