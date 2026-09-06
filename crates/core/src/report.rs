@@ -15,6 +15,10 @@ impl Report {
         self.findings.extend(findings);
     }
 
+    pub fn write_cve_records(&self, writer: &crate::cve::CveWriter) -> std::io::Result<Vec<std::path::PathBuf>> {
+        self.findings.iter().map(|f| writer.write_local(f)).collect()
+    }
+
     pub fn sorted(&self) -> Vec<&Finding> {
         let mut v: Vec<&Finding> = self.findings.iter().collect();
         v.sort_by_key(|f| f.severity);
@@ -153,5 +157,24 @@ mod tests {
         let r = Report::new();
         let html = r.to_html(&[]);
         assert!(html.contains("No findings"));
+    }
+
+    #[test]
+    fn write_cve_records_writes_one_file_per_finding() {
+        use crate::cve::CveWriter;
+
+        let dir = std::env::temp_dir().join(format!("pentest-core-report-cve-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let writer = CveWriter::new(&dir, 2026).unwrap();
+
+        let mut r = Report::new();
+        r.add(vec![finding(Severity::Critical, "a"), finding(Severity::High, "b")]);
+
+        let paths = r.write_cve_records(&writer).unwrap();
+
+        assert_eq!(paths.len(), 2);
+        for p in &paths {
+            assert!(p.exists());
+        }
     }
 }
