@@ -57,6 +57,8 @@ mod tests {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&ts.ts_language()).unwrap();
         parser.set_language(&tsx.ts_language()).unwrap();
+
+        assert_ne!(ts.ts_language(), tsx.ts_language());
     }
 
     #[test]
