@@ -1,6 +1,6 @@
 pub mod cmdi;
-pub mod crlf;
 pub mod content_discovery;
+pub mod crlf;
 pub mod files;
 pub mod headers;
 pub mod nosqli;
