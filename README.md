@@ -1,15 +1,30 @@
-# Authorized Web Pentest Toolkit
+# Authorized Web Pentest Toolkit (Rust)
 
-A small, dependency-free (stdlib-only) web application security scanner for
-**systems you own or are explicitly authorized to test**. Detection-only,
-rate-limited, and dry-run by default.
+A web application security scanner for **systems you own or are explicitly
+authorized to test**. Detection-only, rate-limited, and dry-run by default.
+One `pentest` binary covers black-box DAST checks, local source-code SAST,
+real-CVE matching, and out-of-band (OOB) collaboration — no Python, no
+runtime deps: `cargo build` produces two static binaries.
 
 > ⚠️ Running these checks against systems you don't own or have written
 > authorization to test is illegal in most jurisdictions. Don't.
 
+## Build & install
+
+```bash
+cargo build --release
+# scanner
+./target/release/pentest --list-checks
+# OOB collaborator listener (run on a host the TARGET can reach)
+./target/release/collaborator --host 0.0.0.0 --port 9000
+```
+
 ## Coverage
 
-30 check modules spanning the OWASP Top 10 and common web-attack classes:
+30 DAST check modules spanning the OWASP Top 10 and common web-attack
+classes, plus 6 tree-sitter SAST rules (SQLi concat, command exec/eval,
+unsafe deserialization, weak crypto, path traversal, hardcoded secrets)
+over Rust / TS / JS / Python source trees:
 
 | Module | Class | OWASP |
 |--------|-------|-------|
@@ -44,17 +59,50 @@ rate-limited, and dry-run by default.
 | `blind_oob`         | blind SSRF / stored XSS via a collaborator (opt-in)       | A10/A03 |
 | `external`          | wraps installed sqlmap / nikto / nuclei (opt-in)          | — |
 
+Run `pentest --list-checks` (human) or `pentest --list-checks --json`
+(machine-readable, with each check's `site`/`param` kind).
+
 ## Layout
 
 ```
 pentest/
-├── run_all.py          # orchestrator — "run everything"
-├── common.py           # HttpClient (rate-limited), Finding model, Report
-├── checks/             # one file per check above (drop-in extensible)
-└── README.md
+├── src/main.rs            # `pentest` binary — CLI + orchestrator
+├── crates/
+│   ├── core/              # Finding, Severity, HttpClient (rate-limited), Report
+│   ├── dast/              # 30 network checks + discovery + verify/exploit pass
+│   ├── sast/              # tree-sitter source-code rule engine (--src)
+│   ├── cve-lookup/        # OSV.dev + NVD matching, cvelistV5 record fetch
+│   └── collaborator/      # `collaborator` binary — OOB listener
+└── docs/superpowers/      # design spec + per-phase build plans
 ```
 
-`python3 run_all.py --list-checks` prints the live list.
+## Quick start
+
+```bash
+# 1. Dry run — prints the plan, sends nothing
+pentest -u "https://staging.myapp.test/"
+
+# 2. Full run — NO -p needed: it crawls links + forms and fuzzes every
+#    parameter it finds. Pass -p only to target one parameter explicitly.
+pentest -u "https://staging.myapp.test/" --confirm
+
+# 2b. Explicit single parameter
+pentest -u "https://staging.myapp.test/item?id=1" -p id --confirm
+
+# 3. POST param, with auth, write JSON report
+pentest -u "https://staging.myapp.test/search" -p q --method POST \
+    -H "Cookie: session=abc" -H "Authorization: Bearer ..." \
+    --confirm --json-out report.json
+
+# 4. Static analysis of a local source tree (standalone, no target needed)
+pentest --src ~/code/myapp
+
+# 5. Both at once
+pentest -u "https://staging.myapp.test/" --src ~/code/myapp --confirm
+```
+
+SAST reads local files only, so it is **not** gated behind `--confirm` —
+that gate exists solely to stop unconfirmed requests reaching a target.
 
 ## Automatic attack-surface discovery
 
@@ -83,43 +131,41 @@ For safety it never crawls or fuzzes URLs whose path looks state-changing
 (`logout`, `delete`, `remove`, `reset`, `checkout`, `pay`, …) and skips
 CSRF-token/CAPTCHA fields.
 
-There is also a richer standalone SQLi tool at `../sqli-test/sqli_test.py`
-(more payloads + UNION column-count probe) for deep-diving a single parameter.
+## Agent / CI usage
 
-## Not covered (needs a real DAST / manual testing)
-
-Insecure deserialization, race conditions, business-logic flaws, DOM XSS,
-second-order injection, HTTP request smuggling, auth brute-force (deliberately
-omitted to avoid lockout), and full TLS cipher enumeration. Stored/blind XSS is
-only partially covered (via `blind_oob` + collaborator). Pair this with `sqlmap`,
-OWASP ZAP, `nikto`, `nuclei`, and `testssl.sh`.
-
-## Quick start
+`--json` is the machine-readable mode: stdout carries **only** the findings
+array (same schema as `--json-out`), all human progress moves to stderr, and
+exit codes are stable — built for driving from a script, CI job, or AI agent.
 
 ```bash
-cd ~/pentest
+# Enumerate checks as JSON: [{"name":"recon","kind":"site"}, ...]
+pentest --list-checks --json
 
-# 1. Dry run — prints the plan, sends nothing
-python3 run_all.py -u "https://staging.myapp.test/" 
+# Scan and consume findings directly
+pentest -u "https://staging.myapp.test/" --confirm --json | jq -r '.[] | select(.severity=="high" or .severity=="critical") | .title'
 
-# 2. Full run — NO -p needed: it crawls links + forms and fuzzes every
-#    parameter it finds. Pass -p only to target one parameter explicitly.
-python3 run_all.py -u "https://staging.myapp.test/" --confirm
-
-# 2b. Explicit single parameter
-python3 run_all.py -u "https://staging.myapp.test/item?id=1" -p id --confirm
-
-# 3. POST param, with auth, write JSON report
-python3 run_all.py -u "https://staging.myapp.test/search" -p q --method POST \
-    -H "Cookie: session=abc" -H "Authorization: Bearer ..." \
-    --confirm --json-out report.json
+# Offline source audit, machine-readable
+pentest --src ~/code/myapp --json
 ```
+
+Exit codes:
+
+- `0` — no high/critical findings
+- `1` — at least one high/critical finding (use this to gate CI)
+- `2` — usage error
+
+A dry-run with `--json` still emits a valid (possibly empty) findings array,
+so one command shape works with or without `--confirm`. Each finding object
+carries `check`, `severity`, `title`, `detail`, `evidence`, `url`, `param`,
+`method`, `payload`, `confidence` (`confirmed`/`firm`/`tentative`), `proof`,
+`poc` (a replayable curl command), and `remediation`.
 
 ## Options
 
 | Flag | Meaning |
 |------|---------|
 | `-u, --url`      | Target URL (include `?param=val` for GET) |
+| `--src <dir>`    | Run the SAST pass against a local source tree |
 | `-p, --param`    | Parameter to fuzz for SQLi / XSS / open-redirect |
 | `--method`       | `GET` (default) or `POST` |
 | `-H, --header`   | `Name: value` header, repeatable (auth cookies etc.) |
@@ -127,9 +173,9 @@ python3 run_all.py -u "https://staging.myapp.test/search" -p q --method POST \
 | `--sleep`        | Seconds for the time-based SQLi payload (default 5) |
 | `--only a,b`      | Run only these checks |
 | `--skip a,b`      | Skip these checks |
-| `--list-checks`   | Print all check names and exit |
+| `--list-checks`   | Print all check names and exit (`--json` for machine-readable) |
 | `--ssrf-callback` | A URL you monitor, for out-of-band SSRF confirmation |
-| `--collaborator`  | Base URL of a running `collaborator.py` for blind OOB checks |
+| `--collaborator`  | Base URL of a running `collaborator` listener for blind OOB checks |
 | `--external`      | Also run installed `sqlmap`/`nikto`/`nuclei` |
 | `--wordlist F`    | Extra paths for `content_discovery` (newline-delimited) |
 | `--login-url`     | Login endpoint — enables `auth_bruteforce` |
@@ -137,13 +183,15 @@ python3 run_all.py -u "https://staging.myapp.test/search" -p q --method POST \
 | `--user-field` / `--pass-field` | Login field names (default `username`/`password`) |
 | `--auth-json`     | Send login as JSON instead of form |
 | `--auth-attempts` | Bad-login attempts, max 5 (default 4) |
+| `--json`          | Findings array on stdout, progress on stderr (agent/CI mode) |
 | `--html-out F`    | Write a standalone HTML report |
 | `--no-exploit`    | Skip the verification/proof pass (detection only) |
-| `--json-out F`    | Write findings as JSON |
+| `--json-out F`    | Write findings as JSON to a file |
 | `--confirm`       | Actually send requests (omit = dry run) |
 | `--insecure`      | Disable TLS verification — **self-signed dev hosts only** |
-
-Run `python3 run_all.py --list-checks` for the current check names.
+| `--osv` / `--no-osv` | Real CVE matching via OSV.dev (default: on) |
+| `--nvd-api-key`   | Enable NVD enrichment for infra/banner matches (default: off) |
+| `--cve-dir <dir>` | Where CVE-schema records are written (default: `cve/`) |
 
 ## Verification & proof (finding weaknesses, not just probing)
 
@@ -168,24 +216,37 @@ Disable the whole pass with `--no-exploit` (keeps detection only). Example line:
            fix   : Use parameterized queries / prepared statements; …
 ```
 
+## CVE records & real-vulnerability matching
+
+Every finding is also written to disk as its own record shaped like an official
+CVE Record, under `--cve-dir` (default `cve/`), laid out like the real
+`CVEProject/cvelistV5` repo: `cve/<YEAR>/<N>xxx/<ID>.json`. Self-discovered
+findings use `PENTEST-LOCAL-<year>-<seq>` IDs — never a fabricated real-looking
+CVE ID. When a check fingerprints a component/version (e.g. a server banner),
+the toolkit queries **OSV.dev** (default on, `--no-osv` to disable) and
+optionally **NVD** (`--nvd-api-key`), and a matched real CVE's actual record is
+fetched verbatim from cvelistV5 with your detection context attached in an
+`x_pentest` container.
+
 ## Blind / out-of-band checks (collaborator)
 
 Blind SSRF and stored XSS produce no visible response — you confirm them when
-the target calls back to a listener you control. `collaborator.py` is a tiny
-self-hosted alternative to Burp Collaborator (HTTP only, no DNS).
+the target calls back to a listener you control. The `collaborator` binary is a
+tiny self-hosted alternative to Burp Collaborator (HTTP only, no DNS).
 
 ```bash
 # 1. Run the collaborator on a host the TARGET can reach:
-python3 collaborator.py --host 0.0.0.0 --port 9000
+./target/release/collaborator --host 0.0.0.0 --port 9000
 
 # 2. Point the scan at it:
-python3 run_all.py -u "https://staging.myapp.test/fetch?url=x" -p url --confirm \
+pentest -u "https://staging.myapp.test/fetch?url=x" -p url --confirm \
     --collaborator http://YOUR_HOST:9000
 ```
 
 `blind_oob` plants payloads, waits briefly, and polls the collaborator for hits.
 Stored-XSS beacons may fire later (when an admin views the data) — leave the
-collaborator running and watch its console (`[OOB HIT] token=…`).
+collaborator running and watch its console (`[OOB HIT] token=…`). Hits are also
+queryable: `GET /__hits/<token>` returns JSON.
 
 ## Login testing (auth_bruteforce)
 
@@ -194,7 +255,7 @@ sends a few deliberately-wrong logins to observe behavior (username enumeration
 and whether repeated failures are throttled). Run against **your own** login.
 
 ```bash
-python3 run_all.py -u "https://staging.myapp.test/" --confirm \
+pentest -u "https://staging.myapp.test/" --confirm \
     --login-url https://staging.myapp.test/api/login \
     --auth-username a-real-account@you.test \
     --user-field email --pass-field password --auth-json --auth-attempts 4
@@ -203,10 +264,11 @@ python3 run_all.py -u "https://staging.myapp.test/" --confirm \
 ## HTML report
 
 `--html-out FILE` writes a standalone, theme-aware HTML report (severity-colored,
-target metadata, evidence). Combine with `--json-out` for machine-readable output.
+target metadata, evidence). Combine with `--json-out` (or `--json`) for
+machine-readable output.
 
 ```bash
-python3 run_all.py -u "https://staging.myapp.test/item?id=1" -p id --confirm \
+pentest -u "https://staging.myapp.test/item?id=1" -p id --confirm \
     --html-out report.html --json-out report.json
 ```
 
@@ -216,13 +278,15 @@ python3 run_all.py -u "https://staging.myapp.test/item?id=1" -p id --confirm \
 report (each bounded by a timeout). Missing tools are reported as info, not errors.
 
 ```bash
-python3 run_all.py -u "https://staging.myapp.test/item?id=1" -p id --confirm --external
+pentest -u "https://staging.myapp.test/item?id=1" -p id --confirm --external
 ```
 
-## Exit codes
+## Not covered (needs a real DAST / manual testing)
 
-- `0` — no high/critical findings
-- `1` — at least one high/critical finding (use this to gate CI)
+Insecure deserialization, race conditions, business-logic flaws, DOM XSS,
+second-order injection, HTTP request smuggling, and full TLS cipher enumeration.
+Stored/blind XSS is only partially covered (via `blind_oob` + collaborator).
+Pair this with `sqlmap`, OWASP ZAP, `nikto`, `nuclei`, and `testssl.sh`.
 
 ## Scope & safety notes
 
@@ -230,18 +294,28 @@ python3 run_all.py -u "https://staging.myapp.test/item?id=1" -p id --confirm --e
   SQLi payloads deliberately stall a response — run against **staging**, not prod.
 - **Not exhaustive.** For a real audit also run `sqlmap`, `nikto`, and a proper
   DAST (OWASP ZAP). This toolkit is a fast first pass you can read and extend.
-- **Remediation pointers** are printed with each finding class:
-  parameterized queries for SQLi, output encoding + CSP for XSS, cookie flags,
-  and security headers.
+- **Remediation pointers** are printed with each finding class: parameterized
+  queries for SQLi, output encoding + CSP for XSS, cookie flags, and security
+  headers.
 
 ## Extending
 
-Add a new check by dropping `checks/mycheck.py` with:
+Add a DAST check by dropping `crates/dast/src/checks/mycheck.rs` with:
 
-```python
-NAME = "mycheck"
-def run(client, opts):        # client: HttpClient, opts: dict
-    return [Finding(NAME, "medium", "title", "detail", "evidence")]
+```rust
+use crate::opts::Opts;
+use crate::registry::CheckFuture;
+use pentest_core::{Finding, HttpClient, Severity};
+
+pub const NAME: &str = "mycheck";
+
+pub fn run<'a>(client: &'a HttpClient, _opts: &'a Opts) -> CheckFuture<'a> {
+    Box::pin(async move {
+        vec![Finding::new(NAME, Severity::Medium, "title", "detail").with_evidence("evidence")]
+    })
+}
 ```
 
-then register it in `checks/__init__.py`'s `ALL` list.
+then register it in `crates/dast/src/checks/mod.rs` and in the `SITE` or `PARAM`
+list in `crates/dast/src/all.rs` (plus `ALL`). SAST rules are tree-sitter
+`.scm`-style queries added to `crates/sast/src/query_rules.rs`.

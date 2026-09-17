@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(name = "pentest", about = "Authorized web pentest toolkit")]
+#[command(name = "pentest", version, about = "Authorized web pentest toolkit")]
 struct Cli {
     /// Target base URL (may include ?param=val)
     #[arg(short = 'u', long = "url")]
@@ -83,6 +83,12 @@ struct Cli {
     /// Write findings as a standalone HTML report
     #[arg(long)]
     html_out: Option<String>,
+
+    /// Print the final findings report as JSON on stdout and move all
+    /// human progress output to stderr — machine-readable mode for CI
+    /// and agent use
+    #[arg(long)]
+    json: bool,
 
     /// Write findings as JSON to this file
     #[arg(long)]
@@ -177,10 +183,30 @@ fn parse_headers(items: &[String]) -> HashMap<String, String> {
 fn main() {
     let cli = Cli::parse();
 
+    let json_mode = cli.json;
+    macro_rules! note {
+        ($($arg:tt)*) => {
+            if json_mode { eprintln!($($arg)*); } else { println!($($arg)*); }
+        };
+    }
+
     if cli.list_checks {
-        println!("Available checks:");
-        for c in pentest_dast::ALL {
-            println!("  {}", c.name);
+        if cli.json {
+            let checks: Vec<serde_json::Value> = pentest_dast::ALL
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "kind": if pentest_dast::PARAM.iter().any(|p| p.name == c.name) { "param" } else { "site" },
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&checks).unwrap_or_else(|_| "[]".to_string()));
+        } else {
+            println!("Available checks:");
+            for c in pentest_dast::ALL {
+                println!("  {}", c.name);
+            }
         }
         return;
     }
@@ -213,7 +239,7 @@ fn main() {
     // reaching a pentest target; a local source-tree scan sends none).
     // Runs whenever --src is given, standalone or alongside -u.
     if let Some(src) = &cli.src {
-        println!("[*] SAST scan: {src}");
+        note!("[*] SAST scan: {src}");
         // Exclude this run's CVE output directory (if it already exists,
         // e.g. from a prior run) from the scan by canonicalized path --
         // never by name -- so a `cve/` directory under `--src` doesn't
@@ -226,7 +252,7 @@ fn main() {
         // that's not an error, it just means there's nothing to exclude.
         let exclude: Vec<std::path::PathBuf> = std::fs::canonicalize(&cli.cve_dir).into_iter().collect();
         let sast_findings = pentest_sast::scan(std::path::Path::new(src), &exclude);
-        println!("[*] SAST: {} finding(s)", sast_findings.len());
+        note!("[*] SAST: {} finding(s)", sast_findings.len());
         report.add(sast_findings);
     }
 
@@ -234,22 +260,24 @@ fn main() {
 
     if let Some(url) = cli.url.clone() {
         if !cli.confirm {
-            println!("DRY RUN — no requests will be sent. Add --confirm to execute.\n");
-            println!("  Target : {} {url}", cli.method);
+            note!("DRY RUN — no requests will be sent. Add --confirm to execute.\n");
+            note!("  Target : {} {url}", cli.method);
             let disc = if cli.no_crawl { "disabled (--no-crawl)" } else { "auto-discover via crawl" };
-            println!("  Param  : {}", cli.param.as_deref().map(str::to_string).unwrap_or_else(|| format!("(none — {disc})")));
-            println!("  Checks : {}", mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
-            println!("  Delay  : {}s   Sleep: {}s", cli.delay, cli.sleep);
-            println!("\nRun only against systems you own or are authorized to test.");
-            if cli.src.is_none() {
+            note!("  Param  : {}", cli.param.as_deref().map(str::to_string).unwrap_or_else(|| format!("(none — {disc})")));
+            note!("  Checks : {}", mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+            note!("  Delay  : {}s   Sleep: {}s", cli.delay, cli.sleep);
+            note!("\nRun only against systems you own or are authorized to test.");
+            if cli.src.is_none() && !json_mode {
                 // Pure DAST dry-run (no --src): preserve the original
                 // behavior of stopping here, before any report/CVE
-                // pipeline runs.
+                // pipeline runs. In --json mode the run instead falls
+                // through with zero findings so stdout always carries a
+                // parseable findings array for the calling agent/CI.
                 return;
             }
         } else {
             if cli.insecure {
-                println!("WARNING: TLS verification DISABLED — only acceptable against your own self-signed dev host.\n");
+                note!("WARNING: TLS verification DISABLED — only acceptable against your own self-signed dev host.\n");
             }
 
             let config = HttpClientConfig {
@@ -282,7 +310,7 @@ fn main() {
                 ..Opts::default()
             };
 
-            println!("[*] Site checks: {}", site_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+            note!("[*] Site checks: {}", site_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
             let before = report.findings.len();
             for m in &site_mods {
                 let findings = rt.block_on((m.run)(&client, &base_opts));
@@ -296,7 +324,7 @@ fn main() {
 
             if !param_mods.is_empty() {
                 if let Some(param) = cli.param.clone() {
-                    println!("[*] Param checks on '{param}': {}", param_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+                    note!("[*] Param checks on '{param}': {}", param_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
                     let base_value = reqwest::Url::parse(&url)
                         .ok()
                         .and_then(|u| u.query_pairs().find(|(k, _)| k == param.as_str()).map(|(_, v)| v.into_owned()))
@@ -333,7 +361,7 @@ fn main() {
                             )
                             .with_evidence(format!("{ep} · {}", t.param))]);
                         }
-                        println!("[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})", i + 1, targets.len(), t.method, t.param, t.source.as_str());
+                        note!("[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})", i + 1, targets.len(), t.method, t.param, t.source.as_str());
                         let tclient = HttpClient::new(
                             t.url.clone(),
                             HttpClientConfig { headers: headers.clone(), delay: Duration::from_secs_f64(cli.delay), verify_tls: !cli.insecure, ..HttpClientConfig::default() },
@@ -352,7 +380,7 @@ fn main() {
                         }
                     }
                 } else {
-                    println!("[*] Param checks skipped (no -p and --no-crawl set)");
+                    note!("[*] Param checks skipped (no -p and --no-crawl set)");
                 }
             }
         }
@@ -389,7 +417,7 @@ fn main() {
     }
 
     if !cli.no_exploit {
-        println!("[*] Verifying findings (confidence, PoC)...");
+        note!("[*] Verifying findings (confidence, PoC)...");
     }
     for f in &mut report.findings {
         if f.remediation.is_empty() {
@@ -403,11 +431,15 @@ fn main() {
         }
     }
 
-    report.print_console();
+    if json_mode {
+        println!("{}", report.to_json());
+    } else {
+        report.print_console();
+    }
 
     if let Some(path) = &cli.json_out {
         match std::fs::write(path, report.to_json()) {
-            Ok(()) => println!("\n[+] JSON report written to {path}"),
+            Ok(()) => note!("\n[+] JSON report written to {path}"),
             Err(e) => eprintln!("warning: failed to write JSON report: {e}"),
         }
     }
@@ -425,7 +457,7 @@ fn main() {
         }
         meta.push(("Findings".to_string(), report.findings.len().to_string()));
         match std::fs::write(path, report.to_html(&meta)) {
-            Ok(()) => println!("[+] HTML report written to {path}"),
+            Ok(()) => note!("[+] HTML report written to {path}"),
             Err(e) => eprintln!("warning: failed to write HTML report: {e}"),
         }
     }
