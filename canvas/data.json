@@ -3,55 +3,77 @@
   "title": "Aegis",
   "description": "A single Rust binary covering black-box DAST, local-source SAST, real-CVE matching, and out-of-band collaboration.",
   "nodes": {
+    "hub-dast-live-site-scanning": {
+      "status": "testing",
+      "path": "crates/dast"
+    },
+    "hub-sast-static-source-analysis": {
+      "status": "done",
+      "path": "crates/sast"
+    },
+    "hub-cve-intelligence-reporting": {
+      "status": "done",
+      "path": "crates/cve-lookup"
+    },
     "attack-surface-discovery": {
       "status": "done",
       "title": "Attack-surface discovery",
-      "description": "Crawls same-origin links and forms, parses robots.txt/sitemap.xml, mines JS bundles for API endpoints, and Arjun-style brute-forces hidden parameter names before fuzzing."
+      "description": "Crawls same-origin links and forms, parses robots.txt/sitemap.xml, mines JS bundles for API endpoints, and Arjun-style brute-forces hidden parameter names before fuzzing.",
+      "path": "crates/dast/src/discovery.rs"
     },
     "40-owasp-mapped-vulnerability-checks": {
       "status": "testing",
       "title": "40 OWASP-mapped vulnerability checks",
-      "description": "Covers injection (SQLi, NoSQLi, cmdi, SSTI, LDAP/XPath, log4shell), XSS/CSRF/SSRF/IDOR/JWT/GraphQL and more, each finding tagged with a WSTG v4.2 test ID, CWE, and CAPEC ref."
+      "description": "Covers injection (SQLi, NoSQLi, cmdi, SSTI, LDAP/XPath, log4shell), XSS/CSRF/SSRF/IDOR/JWT/GraphQL and more, each finding tagged with a WSTG v4.2 test ID, CWE, and CAPEC ref.",
+      "path": "crates/dast/src/checks"
     },
     "verification-proof-pass": {
       "status": "done",
       "title": "Verification & proof pass",
-      "description": "Grades every finding confirmed/firm/tentative, extracts real proof (DB version via error-based SQLi, an /etc/passwd line for LFI, evaluated SSTI expressions), and emits a replayable curl PoC."
+      "description": "Grades every finding confirmed/firm/tentative, extracts real proof (DB version via error-based SQLi, an /etc/passwd line for LFI, evaluated SSTI expressions), and emits a replayable curl PoC.",
+      "path": "crates/dast/src/verify.rs"
     },
     "out-of-band-collaborator-listener": {
       "status": "done",
       "title": "Out-of-band collaborator listener",
-      "description": "A standalone collaborator binary that catches blind SSRF/stored-XSS callbacks over raw TCP, buckets hits by token, and persists them to a JSONL log."
+      "description": "A standalone collaborator binary that catches blind SSRF/stored-XSS callbacks over raw TCP, buckets hits by token, and persists them to a JSONL log.",
+      "path": "crates/collaborator"
     },
     "tree-sitter-rule-engine": {
       "status": "done",
       "title": "Tree-sitter rule engine",
-      "description": "11 language-aware queries (SQLi string-concat, command exec/eval, unsafe deserialization, weak crypto, path traversal, SSRF, open redirect, XSS sinks, disabled TLS verification, XPath/LDAP injection, weak PRNGs) across Rust/TS/TSX/JS/Python."
+      "description": "11 language-aware queries (SQLi string-concat, command exec/eval, unsafe deserialization, weak crypto, path traversal, SSRF, open redirect, XSS sinks, disabled TLS verification, XPath/LDAP injection, weak PRNGs) across Rust/TS/TSX/JS/Python.",
+      "path": "crates/sast/src/query_rules.rs"
     },
     "hardcoded-secret-scanner": {
       "status": "done",
       "title": "Hardcoded-secret scanner",
-      "description": "Regex-based secret detection that lossily decodes non-UTF-8 files so a single invalid byte can't silently disable the rule for the whole file."
+      "description": "Regex-based secret detection that lossily decodes non-UTF-8 files so a single invalid byte can't silently disable the rule for the whole file.",
+      "path": "crates/sast/src/secrets.rs"
     },
     "self-scan-feedback-loop-guard": {
       "status": "done",
       "title": "Self-scan feedback-loop guard",
-      "description": "Canonicalized-path exclusion so re-running a scan over a tree containing this tool's own prior CVE-record output doesn't re-detect its own evidence text as new secrets."
+      "description": "Canonicalized-path exclusion so re-running a scan over a tree containing this tool's own prior CVE-record output doesn't re-detect its own evidence text as new secrets.",
+      "path": "crates/sast/src/walker.rs"
     },
     "real-cve-matching-osv-nvd": {
       "status": "done",
       "title": "Real-CVE matching (OSV/NVD)",
-      "description": "Fingerprints component@version from server banners and queries OSV.dev plus optional NVD to attach genuine, matched CVEs instead of guesses."
+      "description": "Fingerprints component@version from server banners and queries OSV.dev plus optional NVD to attach genuine, matched CVEs instead of guesses.",
+      "path": "crates/cve-lookup/src/lookup.rs"
     },
     "cve-record-writer": {
       "status": "done",
       "title": "CVE-record writer",
-      "description": "Persists every finding as a cvelistV5-shaped JSON record, giving self-discovered issues honest PENTEST-LOCAL IDs rather than fabricating a real-looking CVE number."
+      "description": "Persists every finding as a cvelistV5-shaped JSON record, giving self-discovered issues honest PENTEST-LOCAL IDs rather than fabricating a real-looking CVE number.",
+      "path": "crates/core/src/cve/writer.rs"
     },
     "standards-mapped-reporting": {
       "status": "done",
       "title": "Standards-mapped reporting",
-      "description": "Every finding carries WSTG/CWE/CAPEC refs plus JSON/HTML report output and stable exit codes built for CI gating and agent/script consumption."
+      "description": "Every finding carries WSTG/CWE/CAPEC refs plus JSON/HTML report output and stable exit codes built for CI gating and agent/script consumption.",
+      "path": "crates/core/src/standards.rs"
     }
   }
 }
