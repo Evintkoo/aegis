@@ -1,3 +1,15 @@
 {
-  "status": "in-progress"
+  "status": "in-progress",
+  "nodes": {
+    "attack-surface-discovery": { "status": "done" },
+    "40-owasp-mapped-vulnerability-checks": { "status": "testing" },
+    "verification-proof-pass": { "status": "done" },
+    "out-of-band-collaborator-listener": { "status": "done" },
+    "tree-sitter-rule-engine": { "status": "done" },
+    "hardcoded-secret-scanner": { "status": "done" },
+    "self-scan-feedback-loop-guard": { "status": "done" },
+    "real-cve-matching-osv-nvd": { "status": "done" },
+    "cve-record-writer": { "status": "done" },
+    "standards-mapped-reporting": { "status": "done" }
+  }
 }
