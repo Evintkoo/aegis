@@ -1,22 +1,46 @@
 use crate::finding::Finding;
 use crate::severity::Severity;
 
+/// What makes two findings "the same" for dedup: check, url, param,
+/// title, payload — plus severity, so a re-emission at a different
+/// severity still gets through.
+type DedupKey = (String, String, String, String, String, Severity);
+
 #[derive(Default)]
 pub struct Report {
     pub findings: Vec<Finding>,
+    seen: std::collections::HashSet<DedupKey>,
 }
 
 impl Report {
     pub fn new() -> Self {
-        Self { findings: Vec::new() }
+        Self::default()
     }
 
     pub fn add(&mut self, findings: Vec<Finding>) {
-        self.findings.extend(findings);
+        for f in findings {
+            let key = (
+                f.check.clone(),
+                f.url.clone(),
+                f.param.clone(),
+                f.title.clone(),
+                f.payload.clone(),
+                f.severity,
+            );
+            if self.seen.insert(key) {
+                self.findings.push(f);
+            }
+        }
     }
 
-    pub fn write_cve_records(&self, writer: &crate::cve::CveWriter) -> std::io::Result<Vec<std::path::PathBuf>> {
-        self.findings.iter().map(|f| writer.write_local(f)).collect()
+    pub fn write_cve_records(
+        &self,
+        writer: &crate::cve::CveWriter,
+    ) -> std::io::Result<Vec<std::path::PathBuf>> {
+        self.findings
+            .iter()
+            .map(|f| writer.write_local(f))
+            .collect()
     }
 
     pub fn sorted(&self) -> Vec<&Finding> {
@@ -63,7 +87,8 @@ impl Report {
             Severity::Info => "#5c6672",
         };
 
-        let mut counts: std::collections::BTreeMap<Severity, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<Severity, usize> =
+            std::collections::BTreeMap::new();
         for f in &self.findings {
             *counts.entry(f.severity).or_insert(0) += 1;
         }
@@ -83,11 +108,53 @@ impl Report {
             .sorted()
             .iter()
             .map(|f| {
+                // "GET /product · id" — url with method prefixed and the
+                // param it was found through appended.
+                let mut url_cell = String::new();
+                if !f.url.is_empty() {
+                    if !f.method.is_empty() {
+                        url_cell.push_str(&f.method);
+                        url_cell.push(' ');
+                    }
+                    url_cell.push_str(&f.url);
+                    if !f.param.is_empty() {
+                        url_cell.push_str(&format!(" · {}", f.param));
+                    }
+                }
+
+                let mut sections = String::new();
+                if !f.evidence.is_empty() {
+                    sections.push_str(&format!(
+                        "<div class=\"label\">Evidence</div><pre class=\"evidence\" style=\"white-space:pre-wrap;word-break:break-word\">{}</pre>",
+                        html_escape(&f.evidence)
+                    ));
+                }
+                if !f.poc.is_empty() {
+                    sections.push_str(&format!(
+                        "<div class=\"label\">PoC</div><pre style=\"white-space:pre-wrap;word-break:break-word\"><code>{}</code></pre>",
+                        html_escape(&f.poc)
+                    ));
+                }
+                if !f.remediation.is_empty() {
+                    sections.push_str(&format!(
+                        "<div class=\"label\">Remediation</div><div>{}</div>",
+                        html_escape(&f.remediation)
+                    ));
+                }
+                let details_row = if sections.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "<tr><td colspan=\"4\"><details><summary>details</summary>{sections}</details></td></tr>"
+                    )
+                };
+
                 format!(
-                    "<tr><td><span class=\"sev\" style=\"background:{}\">{}</span></td><td class=\"check\">{}</td><td><div class=\"title\">{}</div><div class=\"detail\">{}</div></td></tr>",
+                    "<tr><td><span class=\"sev\" style=\"background:{}\">{}</span></td><td class=\"check\">{}</td><td class=\"url\">{}</td><td><div class=\"title\">{}</div><div class=\"detail\">{}</div></td></tr>{details_row}",
                     colors(f.severity),
                     html_escape(f.severity.label_upper()),
                     html_escape(&f.check),
+                    html_escape(&url_cell),
                     html_escape(&f.title),
                     html_escape(&f.detail)
                 )
@@ -96,7 +163,13 @@ impl Report {
 
         let meta_rows: String = meta
             .iter()
-            .map(|(k, v)| format!("<tr><th>{}</th><td>{}</td></tr>", html_escape(k), html_escape(v)))
+            .map(|(k, v)| {
+                format!(
+                    "<tr><th>{}</th><td>{}</td></tr>",
+                    html_escape(k),
+                    html_escape(v)
+                )
+            })
             .collect();
 
         format!(
@@ -137,7 +210,10 @@ mod tests {
     #[test]
     fn sorted_puts_critical_first() {
         let mut r = Report::new();
-        r.add(vec![finding(Severity::Info, "a"), finding(Severity::Critical, "b")]);
+        r.add(vec![
+            finding(Severity::Info, "a"),
+            finding(Severity::Critical, "b"),
+        ]);
         let sorted = r.sorted();
         assert_eq!(sorted[0].severity, Severity::Critical);
         assert_eq!(sorted[1].severity, Severity::Info);
@@ -156,7 +232,10 @@ mod tests {
     #[test]
     fn to_html_contains_severity_chip_and_escapes_input() {
         let mut r = Report::new();
-        r.add(vec![finding(Severity::Critical, "<script>alert(1)</script>")]);
+        r.add(vec![finding(
+            Severity::Critical,
+            "<script>alert(1)</script>",
+        )]);
         let html = r.to_html(&[]);
         assert!(html.contains("CRITICAL"));
         assert!(!html.contains("<script>alert(1)</script>"));
@@ -168,6 +247,63 @@ mod tests {
         let r = Report::new();
         let html = r.to_html(&[]);
         assert!(html.contains("No findings"));
+    }
+
+    #[test]
+    fn add_skips_exact_duplicates() {
+        let mut r = Report::new();
+        r.add(vec![finding(Severity::High, "x")]);
+        r.add(vec![finding(Severity::High, "x")]);
+        r.add(vec![
+            finding(Severity::High, "x").with_evidence("same key, later run")
+        ]);
+        assert_eq!(r.findings.len(), 1);
+    }
+
+    #[test]
+    fn add_keeps_findings_that_differ_in_key_or_severity() {
+        let mut r = Report::new();
+        r.add(vec![finding(Severity::High, "x")]);
+        r.add(vec![finding(Severity::Critical, "x")]);
+        r.add(vec![Finding::new("other", Severity::High, "x", "detail")]);
+        r.add(vec![Finding::new("test", Severity::High, "y", "detail")]);
+        assert_eq!(r.findings.len(), 4);
+    }
+
+    #[test]
+    fn to_html_renders_url_column_and_collapsible_details() {
+        let mut f = finding(Severity::High, "x");
+        f.url = "http://t/product".to_string();
+        f.method = "GET".to_string();
+        f.param = "id".to_string();
+        f.evidence = "EV<impl>".to_string();
+        f.poc = "curl 'http://t/product?id=1'".to_string();
+        f.remediation = "encode output".to_string();
+        let mut r = Report::new();
+        r.add(vec![f]);
+
+        let html = r.to_html(&[]);
+
+        assert!(html.contains("GET http://t/product · id"), "{html}");
+        assert!(html.contains("<details><summary>details</summary>"));
+        assert!(html.contains("Evidence"));
+        assert!(html.contains("EV&lt;impl&gt;"));
+        assert!(html.contains("<code>curl 'http://t/product?id=1'</code>"));
+        assert!(html.contains("Remediation"));
+        assert!(html.contains("encode output"));
+    }
+
+    #[test]
+    fn to_html_escapes_poc_and_skips_details_row_when_all_sections_empty() {
+        let mut bare = finding(Severity::Low, "bare");
+        bare.url = "http://t/p".to_string();
+        let mut r = Report::new();
+        r.add(vec![bare]);
+
+        let html = r.to_html(&[]);
+
+        assert!(!html.contains("<details>"), "{html}");
+        assert!(html.contains("http://t/p"));
     }
 
     #[test]
@@ -195,7 +331,9 @@ mod tests {
     #[test]
     fn print_console_does_not_panic_on_multibyte_evidence() {
         let mut r = Report::new();
-        r.add(vec![finding(Severity::High, "x").with_evidence("€".repeat(250))]);
+        r.add(vec![
+            finding(Severity::High, "x").with_evidence("€".repeat(250))
+        ]);
         // Regression test for the byte-index-200 char-boundary panic:
         // this must not panic even though byte 200 falls mid-character.
         r.print_console();
@@ -205,12 +343,18 @@ mod tests {
     fn write_cve_records_writes_one_file_per_finding() {
         use crate::cve::CveWriter;
 
-        let dir = std::env::temp_dir().join(format!("pentest-core-report-cve-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pentest-core-report-cve-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let writer = CveWriter::new(&dir, 2026).unwrap();
 
         let mut r = Report::new();
-        r.add(vec![finding(Severity::Critical, "a"), finding(Severity::High, "b")]);
+        r.add(vec![
+            finding(Severity::Critical, "a"),
+            finding(Severity::High, "b"),
+        ]);
 
         let paths = r.write_cve_records(&writer).unwrap();
 

@@ -1,7 +1,10 @@
 use std::process::Command;
 
 fn fixture_dir(suffix: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("pentest-sast-cli-test-{suffix}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "pentest-sast-cli-test-{suffix}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -12,7 +15,11 @@ fn fixture_dir(suffix: &str) -> std::path::PathBuf {
 fn sast_finding_count(stdout: &str) -> usize {
     stdout
         .lines()
-        .find_map(|l| l.strip_prefix("[*] SAST: ").and_then(|rest| rest.split_whitespace().next()).and_then(|n| n.parse::<usize>().ok()))
+        .find_map(|l| {
+            l.strip_prefix("[*] SAST: ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|n| n.parse::<usize>().ok())
+        })
         .unwrap_or_else(|| panic!("no '[*] SAST: N finding(s)' line found in stdout:\n{stdout}"))
 }
 
@@ -21,7 +28,9 @@ fn sast_finding_count(stdout: &str) -> usize {
 /// both flags now that either satisfies the requirement.
 #[test]
 fn missing_url_and_src_exits_with_usage_error() {
-    let output = Command::new(env!("CARGO_BIN_EXE_pentest")).output().expect("failed to run the pentest binary");
+    let output = Command::new(env!("CARGO_BIN_EXE_pentest"))
+        .output()
+        .expect("failed to run the pentest binary");
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -34,8 +43,15 @@ fn missing_url_and_src_exits_with_usage_error() {
 #[test]
 fn src_alone_scans_and_writes_json_report_without_a_url() {
     let dir = fixture_dir("standalone");
-    std::fs::write(dir.join("app.py"), "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n").unwrap();
-    let json_path = std::env::temp_dir().join(format!("pentest-sast-cli-test-standalone-{}.json", std::process::id()));
+    std::fs::write(
+        dir.join("app.py"),
+        "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n",
+    )
+    .unwrap();
+    let json_path = std::env::temp_dir().join(format!(
+        "pentest-sast-cli-test-standalone-{}.json",
+        std::process::id()
+    ));
 
     let output = Command::new(env!("CARGO_BIN_EXE_pentest"))
         .arg("--src")
@@ -45,7 +61,11 @@ fn src_alone_scans_and_writes_json_report_without_a_url() {
         .output()
         .expect("failed to run the pentest binary");
 
-    assert_eq!(output.status.code(), Some(1), "High-severity finding must set the severe exit code");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "High-severity finding must set the severe exit code"
+    );
     let json = std::fs::read_to_string(&json_path).expect("json report should have been written");
     assert!(json.contains("sast_sqli_concat"));
     assert!(json.contains("CWE-89"));
@@ -72,8 +92,14 @@ fn src_runs_even_when_dast_is_a_dry_run() {
         .expect("failed to run the pentest binary");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("DRY RUN"), "DAST portion must still show the dry-run preview");
-    assert!(stdout.contains("sast_command_exec"), "SAST finding must still reach report output");
+    assert!(
+        stdout.contains("DRY RUN"),
+        "DAST portion must still show the dry-run preview"
+    );
+    assert!(
+        stdout.contains("sast_command_exec"),
+        "SAST finding must still reach report output"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -92,7 +118,10 @@ fn pure_dast_dry_run_without_src_stops_before_report_output() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("DRY RUN"));
-    assert!(!stdout.contains("PENTEST REPORT"), "no report pipeline should run for a pure DAST dry-run");
+    assert!(
+        !stdout.contains("PENTEST REPORT"),
+        "no report pipeline should run for a pure DAST dry-run"
+    );
 }
 
 /// B2 regression: running the binary twice against the same `--src`, with
@@ -133,7 +162,10 @@ fn repeated_runs_with_cve_dir_inside_src_do_not_compound_findings() {
     let first = run();
     let first_stdout = String::from_utf8_lossy(&first.stdout);
     let first_count = sast_finding_count(&first_stdout);
-    assert!(first_count >= 1, "expected at least the hardcoded-secret finding on the first run, got:\n{first_stdout}");
+    assert!(
+        first_count >= 1,
+        "expected at least the hardcoded-secret finding on the first run, got:\n{first_stdout}"
+    );
 
     let second = run();
     let second_stdout = String::from_utf8_lossy(&second.stdout);

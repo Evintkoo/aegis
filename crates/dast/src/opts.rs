@@ -24,6 +24,20 @@ pub struct Opts {
     /// Bad-login attempts to send; hard-capped at 5 by `auth_bruteforce`
     /// regardless of this value, to avoid locking out the account.
     pub auth_attempts: u64,
+    /// Opt-in: send bounded request-smuggling framing probes
+    /// (`request_smuggling`). Conflicting-header probes can desync a
+    /// vulnerable front-end, so this stays off by default.
+    pub smuggling: bool,
+    /// Opt-in: send concurrent duplicate requests to detect missing
+    /// locking/race behavior (`race_condition`).
+    pub race: bool,
+    /// Opt-in: send out-of-domain values (negative/zero/overflow) for the
+    /// target parameter (`business_logic`). These can be state-changing,
+    /// so this stays off by default and assumes a staging target.
+    pub logic: bool,
+    /// Opt-in: enumerate accepted TLS versions (`tls_enum`), via direct
+    /// TLS ClientHello probes over a raw socket against https targets.
+    pub tls_enum: bool,
 }
 
 impl Default for Opts {
@@ -43,6 +57,10 @@ impl Default for Opts {
             pass_field: "password".to_string(),
             auth_json: false,
             auth_attempts: 4,
+            smuggling: false,
+            race: false,
+            logic: false,
+            tls_enum: false,
         }
     }
 }
@@ -68,5 +86,9 @@ mod tests {
         assert_eq!(o.pass_field, "password");
         assert!(!o.auth_json);
         assert_eq!(o.auth_attempts, 4);
+        assert!(!o.smuggling);
+        assert!(!o.race);
+        assert!(!o.logic);
+        assert!(!o.tls_enum);
     }
 }

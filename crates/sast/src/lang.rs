@@ -67,7 +67,13 @@ mod tests {
 
     #[test]
     fn every_recognized_language_sets_language_successfully() {
-        for lang in [Lang::Rust, Lang::JavaScript, Lang::TypeScript, Lang::Tsx, Lang::Python] {
+        for lang in [
+            Lang::Rust,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Tsx,
+            Lang::Python,
+        ] {
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&lang.ts_language()).unwrap();
         }

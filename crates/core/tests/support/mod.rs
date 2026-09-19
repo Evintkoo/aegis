@@ -9,7 +9,11 @@ pub struct TestResponse {
 
 impl TestResponse {
     pub fn ok(body: impl Into<String>) -> Self {
-        Self { status: 200, headers: vec![], body: body.into() }
+        Self {
+            status: 200,
+            headers: vec![],
+            body: body.into(),
+        }
     }
 }
 
@@ -24,7 +28,9 @@ pub struct RecordedRequest {
 /// Starts a one-shot HTTP/1.1 server on 127.0.0.1 that answers exactly one
 /// request with `response`, then returns what it received. Returns the
 /// base URL to hit and a receiver for the captured request.
-pub async fn one_shot_server(response: TestResponse) -> (String, tokio::sync::oneshot::Receiver<RecordedRequest>) {
+pub async fn one_shot_server(
+    response: TestResponse,
+) -> (String, tokio::sync::oneshot::Receiver<RecordedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -76,5 +82,10 @@ fn parse_request(text: &str) -> RecordedRequest {
         }
     }
 
-    RecordedRequest { method, path_and_query, headers, body }
+    RecordedRequest {
+        method,
+        path_and_query,
+        headers,
+        body,
+    }
 }

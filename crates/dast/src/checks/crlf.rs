@@ -34,18 +34,38 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         } else {
             HttpRequest::get().param(param, val).no_redirects()
         };
-        let Ok(r) = client.request(req).await else { continue };
+        let Ok(r) = client.request(req).await else {
+            continue;
+        };
 
-        if r.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("X-Crlf-Test")) {
-            out.push(Finding::new(NAME, Severity::High, "CRLF injection / response splitting", format!("payload injected a response header via '{param}'")).with_evidence(*p));
+        if r.headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("X-Crlf-Test"))
+        {
+            out.push(
+                Finding::new(
+                    NAME,
+                    Severity::High,
+                    "CRLF injection / response splitting",
+                    format!("payload injected a response header via '{param}'"),
+                )
+                .with_evidence(*p),
+            );
             break;
         }
-        let set_cookie_has_marker = r
-            .headers
-            .iter()
-            .any(|(k, v)| k.eq_ignore_ascii_case("Set-Cookie") && v.to_lowercase().contains("crlftest"));
+        let set_cookie_has_marker = r.headers.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("Set-Cookie") && v.to_lowercase().contains("crlftest")
+        });
         if set_cookie_has_marker {
-            out.push(Finding::new(NAME, Severity::High, "CRLF injection (Set-Cookie)", format!("payload injected a Set-Cookie via '{param}'")).with_evidence(*p));
+            out.push(
+                Finding::new(
+                    NAME,
+                    Severity::High,
+                    "CRLF injection (Set-Cookie)",
+                    format!("payload injected a Set-Cookie via '{param}'"),
+                )
+                .with_evidence(*p),
+            );
             break;
         }
     }
@@ -59,7 +79,10 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         HttpClient::new(base_url, config)
     }
 
@@ -75,7 +98,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("next".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("next".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -95,7 +121,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("next".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("next".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -107,7 +136,10 @@ mod tests {
     async fn no_findings_against_a_clean_target() {
         let base = scripted_server(|_req, _| ScriptedResponse::ok("ok")).await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("next".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("next".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 

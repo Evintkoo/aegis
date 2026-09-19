@@ -9,7 +9,12 @@ use x509_parser::prelude::FromDer;
 pub const NAME: &str = "recon";
 
 const FINGERPRINT_HEADERS: &[&str] = &[
-    "Server", "X-Powered-By", "X-AspNet-Version", "X-AspNetMvc-Version", "X-Generator", "Via",
+    "Server",
+    "X-Powered-By",
+    "X-AspNet-Version",
+    "X-AspNetMvc-Version",
+    "X-Generator",
+    "Via",
 ];
 const RISKY_METHODS: &[&str] = &["PUT", "DELETE", "TRACE", "CONNECT", "PATCH"];
 
@@ -26,22 +31,48 @@ async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     for h in FINGERPRINT_HEADERS {
         if let Some(v) = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(h)) {
             out.push(
-                Finding::new(NAME, Severity::Info, format!("{h} header exposed"), "reveals stack/version to attackers")
-                    .with_evidence(v.1.clone()),
+                Finding::new(
+                    NAME,
+                    Severity::Info,
+                    format!("{h} header exposed"),
+                    "reveals stack/version to attackers",
+                )
+                .with_evidence(v.1.clone()),
             );
         }
     }
 
-    if let Ok(opt) = client.request(HttpRequest { method: reqwest_method_options(), ..HttpRequest::get() }).await {
-        if let Some((_, allow)) = opt.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Allow")) {
-            let risky: Vec<&str> = RISKY_METHODS.iter().filter(|m| allow.to_uppercase().contains(*m)).copied().collect();
-            let sev = if risky.is_empty() { Severity::Info } else { Severity::Medium };
+    if let Ok(opt) = client
+        .request(HttpRequest {
+            method: reqwest_method_options(),
+            ..HttpRequest::get()
+        })
+        .await
+    {
+        if let Some((_, allow)) = opt
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Allow"))
+        {
+            let risky: Vec<&str> = RISKY_METHODS
+                .iter()
+                .filter(|m| allow.to_uppercase().contains(*m))
+                .copied()
+                .collect();
+            let sev = if risky.is_empty() {
+                Severity::Info
+            } else {
+                Severity::Medium
+            };
             let detail = if risky.is_empty() {
                 format!("OPTIONS advertises: {allow}")
             } else {
                 format!("OPTIONS advertises: {allow} — risky: {risky:?}")
             };
-            out.push(Finding::new(NAME, sev, "Allowed HTTP methods", detail).with_evidence(allow.clone()));
+            out.push(
+                Finding::new(NAME, sev, "Allowed HTTP methods", detail)
+                    .with_evidence(allow.clone()),
+            );
         }
     }
 
@@ -60,16 +91,37 @@ async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
                 // variant names (e.g. "TLSv1_3", "TLSv1_0", "SSLv3"), verified live against
                 // a real handshake — not the dotted "TLSv1.0"/"TLSv1.1" form.
                 let weak = matches!(version.as_str(), "TLSv1_0" | "TLSv1_1" | "SSLv3" | "SSLv2");
-                let sev = if weak { Severity::Medium } else { Severity::Info };
-                let title = if weak { "Weak TLS version negotiated" } else { "TLS version" };
-                out.push(Finding::new(NAME, sev, title, format!("negotiated {version}")).with_evidence(version.clone()));
+                let sev = if weak {
+                    Severity::Medium
+                } else {
+                    Severity::Info
+                };
+                let title = if weak {
+                    "Weak TLS version negotiated"
+                } else {
+                    "TLS version"
+                };
                 out.push(
-                    Finding::new(NAME, Severity::Info, "TLS certificate", format!("expires {not_after}"))
-                        .with_evidence(subject),
+                    Finding::new(NAME, sev, title, format!("negotiated {version}"))
+                        .with_evidence(version.clone()),
+                );
+                out.push(
+                    Finding::new(
+                        NAME,
+                        Severity::Info,
+                        "TLS certificate",
+                        format!("expires {not_after}"),
+                    )
+                    .with_evidence(subject),
                 );
             }
             Err(e) => {
-                out.push(Finding::new(NAME, Severity::Info, "TLS inspection failed", e));
+                out.push(Finding::new(
+                    NAME,
+                    Severity::Info,
+                    "TLS inspection failed",
+                    e,
+                ));
             }
         }
     }
@@ -115,7 +167,8 @@ fn extract_host(base_url: &str) -> Option<String> {
 /// legacy protocol purely for detection purposes — there is no equivalent escape
 /// hatch in `rustls`.
 fn inspect_tls(host: &str, port: u16) -> Result<(String, String, String), String> {
-    let root_store = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
@@ -137,11 +190,14 @@ fn inspect_tls(host: &str, port: u16) -> Result<(String, String, String), String
 
     while conn.is_handshaking() {
         if conn.wants_write() {
-            conn.write_tls(&mut sock).map_err(|e| format!("TLS write failed: {e}"))?;
+            conn.write_tls(&mut sock)
+                .map_err(|e| format!("TLS write failed: {e}"))?;
         }
         if conn.wants_read() {
-            conn.read_tls(&mut sock).map_err(|e| format!("TLS read failed: {e}"))?;
-            conn.process_new_packets().map_err(|e| format!("TLS handshake failed: {e}"))?;
+            conn.read_tls(&mut sock)
+                .map_err(|e| format!("TLS read failed: {e}"))?;
+            conn.process_new_packets()
+                .map_err(|e| format!("TLS handshake failed: {e}"))?;
         }
     }
 
@@ -150,8 +206,12 @@ fn inspect_tls(host: &str, port: u16) -> Result<(String, String, String), String
         .map(|v| format!("{v:?}"))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let certs = conn.peer_certificates().ok_or_else(|| "no peer certificate presented".to_string())?;
-    let leaf = certs.first().ok_or_else(|| "empty certificate chain".to_string())?;
+    let certs = conn
+        .peer_certificates()
+        .ok_or_else(|| "no peer certificate presented".to_string())?;
+    let leaf = certs
+        .first()
+        .ok_or_else(|| "empty certificate chain".to_string())?;
     let (_, parsed) = x509_parser::certificate::X509Certificate::from_der(leaf.as_ref())
         .map_err(|e| format!("certificate parse failed: {e}"))?;
     let not_after = parsed.tbs_certificate.validity.not_after.to_string();
@@ -166,8 +226,14 @@ mod tests {
 
     #[test]
     fn extract_host_reads_hostname_from_https_url() {
-        assert_eq!(extract_host("https://example.test:443/path"), Some("example.test".to_string()));
-        assert_eq!(extract_host("https://example.test/path"), Some("example.test".to_string()));
+        assert_eq!(
+            extract_host("https://example.test:443/path"),
+            Some("example.test".to_string())
+        );
+        assert_eq!(
+            extract_host("https://example.test/path"),
+            Some("example.test".to_string())
+        );
     }
 
     #[test]
@@ -188,7 +254,10 @@ mod tests {
         let result = inspect_tls("10.255.255.1", 443);
         let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "expected the non-routable address to fail, got {result:?}");
+        assert!(
+            result.is_err(),
+            "expected the non-routable address to fail, got {result:?}"
+        );
         assert!(
             elapsed < Duration::from_secs(15),
             "connect_timeout did not bound the call: took {elapsed:?}"

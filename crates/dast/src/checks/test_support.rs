@@ -22,15 +22,30 @@ pub struct ScriptedResponse {
 
 impl ScriptedResponse {
     pub fn ok(body: impl Into<String>) -> Self {
-        Self { status: 200, headers: vec![], body: body.into(), delay_ms: 0 }
+        Self {
+            status: 200,
+            headers: vec![],
+            body: body.into(),
+            delay_ms: 0,
+        }
     }
 
     pub fn with_status(status: u16, body: impl Into<String>) -> Self {
-        Self { status, headers: vec![], body: body.into(), delay_ms: 0 }
+        Self {
+            status,
+            headers: vec![],
+            body: body.into(),
+            delay_ms: 0,
+        }
     }
 
     pub fn delayed(body: impl Into<String>, delay_ms: u64) -> Self {
-        Self { status: 200, headers: vec![], body: body.into(), delay_ms }
+        Self {
+            status: 200,
+            headers: vec![],
+            body: body.into(),
+            delay_ms,
+        }
     }
 
     pub fn header(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
@@ -55,7 +70,9 @@ where
 
     tokio::spawn(async move {
         loop {
-            let Ok((socket, _)) = listener.accept().await else { break };
+            let Ok((socket, _)) = listener.accept().await else {
+                break;
+            };
             let handler = Arc::clone(&handler);
             let base = base_for_handler.clone();
             tokio::spawn(handle_one(socket, handler, base));
@@ -70,7 +87,9 @@ where
     F: Fn(&RecordedRequest, &str) -> ScriptedResponse + Send + Sync + 'static,
 {
     let mut buf = vec![0u8; 65536];
-    let Ok(n) = socket.read(&mut buf).await else { return };
+    let Ok(n) = socket.read(&mut buf).await else {
+        return;
+    };
     if n == 0 {
         return;
     }
@@ -100,7 +119,9 @@ fn parse_request(text: &str) -> RecordedRequest {
     let mut parts = request_line.split_whitespace();
     let _method = parts.next().unwrap_or("GET");
     let path_and_query = parts.next().unwrap_or("/").to_string();
-    let (path, query_str) = path_and_query.split_once('?').unwrap_or((path_and_query.as_str(), ""));
+    let (path, query_str) = path_and_query
+        .split_once('?')
+        .unwrap_or((path_and_query.as_str(), ""));
     let query = query_str
         .split('&')
         .filter(|s| !s.is_empty())
@@ -127,7 +148,12 @@ fn parse_request(text: &str) -> RecordedRequest {
         }
     }
 
-    RecordedRequest { path: path.to_string(), query, headers, body }
+    RecordedRequest {
+        path: path.to_string(),
+        query,
+        headers,
+        body,
+    }
 }
 
 fn urldecode(s: &str) -> String {

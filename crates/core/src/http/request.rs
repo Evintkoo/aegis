@@ -17,6 +17,10 @@ pub struct HttpRequest {
     pub raw_body: Option<Vec<u8>>,
     pub headers: HashMap<String, String>,
     pub allow_redirects: bool,
+    /// Skips the shared rate-limit wait. Only for burst probes whose
+    /// inter-arrival timing *is* the signal (`race_condition`'s
+    /// concurrent duplicates) — every other request stays rate-limited.
+    pub urgent: bool,
 }
 
 impl HttpRequest {
@@ -30,6 +34,7 @@ impl HttpRequest {
             raw_body: None,
             headers: HashMap::new(),
             allow_redirects: true,
+            urgent: false,
         }
     }
 
@@ -72,6 +77,11 @@ impl HttpRequest {
 
     pub fn no_redirects(mut self) -> Self {
         self.allow_redirects = false;
+        self
+    }
+
+    pub fn urgent(mut self) -> Self {
+        self.urgent = true;
         self
     }
 }

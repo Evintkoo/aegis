@@ -21,18 +21,31 @@ cargo build --release
 
 ## Coverage
 
-30 DAST check modules spanning the OWASP Top 10 and common web-attack
-classes, plus 6 tree-sitter SAST rules (SQLi concat, command exec/eval,
-unsafe deserialization, weak crypto, path traversal, hardcoded secrets)
-over Rust / TS / JS / Python source trees:
+40 DAST check modules spanning the OWASP Top 10 and common web-attack
+classes, plus 13 SAST rules (11 tree-sitter query rules — SQLi concat,
+command exec/eval, unsafe deserialization, weak crypto, path traversal,
+SSRF, open redirect, XSS sinks, disabled TLS verification, XPath/LDAP
+injection, weak PRNGs — plus regex-based hardcoded-secret detection)
+over Rust / TS / TSX / JS / Python source trees.
+
+Every finding carries **standards refs** — the OWASP WSTG v4.2 test ID
+(`WSTG-v42-INPV-05`-style, in the versioned form the WSTG asks tooling to
+use), the CWE weakness, and, where iconic, the CAPEC attack pattern —
+so a run's output drops straight into a PTES / NIST SP 800-115-style
+report and WSTG coverage is auditable per check. Refs appear in JSON
+findings, `--list-checks` output, and the console line:
 
 | Module | Class | OWASP |
 |--------|-------|-------|
 | `recon`             | server/stack fingerprint, HTTP methods, TLS version & cert | A05/A06 |
+| `api_docs`          | exposed Swagger/OpenAPI/Redoc contracts & UIs              | A05 |
+| `debug_endpoints`   | Spring actuators, pprof, phpinfo, server-status, trace.axd | A05 |
+| `tls_enum`          | TLS protocol-version enumeration (opt-in `--tls-enum`)     | A02     |
 | `headers`           | security headers, cookie flags, CORS misconfig             | A05 |
 | `content_discovery` | admin/api/backup path & directory enumeration              | A05 |
 | `files`             | exposed .git/.env/backups, directory listing               | A05 |
 | `sqli`              | error / boolean-blind / time-blind SQL injection           | A03 |
+| `log4shell`         | JNDI lookup injection (Log4Shell), headers + params        | A06 |
 | `nosqli`            | MongoDB operator & auth-bypass injection                   | A03 |
 | `cmdi`              | OS command injection (in-band + time-blind)                | A03 |
 | `ssti`              | server-side template injection                             | A03 |
@@ -40,6 +53,7 @@ over Rust / TS / JS / Python source trees:
 | `xxe`               | XML external entity file read                              | A05 |
 | `crlf`              | CRLF injection / HTTP response splitting                   | A03 |
 | `xss`               | reflected cross-site scripting                             | A03 |
+| `dom_xss`           | DOM XSS (client JS source→sink analysis, no payloads)      | A03 |
 | `ssrf`              | server-side request forgery (in-band + OOB callback)       | A10 |
 | `redirect`          | open redirect                                              | A01 |
 | `host_header`       | Host-header injection (reset/cache poisoning)              | A05 |
@@ -48,6 +62,9 @@ over Rust / TS / JS / Python source trees:
 | `jwt`               | JWT weakness analysis (alg=none, no exp, weak claims)     | A02/A07 |
 | `info_disclosure`   | stack traces, debug pages, leaked keys/secrets            | A05/A09 |
 | `idor`              | broken object-level authorization (heuristic)             | A01 |
+| `hpp`               | HTTP parameter pollution (duplicate-param differential)   | A03 |
+| `deserialize`       | unsafe deserialization error signatures (Java/PHP/.NET/pickle) | A08 |
+| `business_logic`    | out-of-domain values (negative/zero/overflow) (opt-in `--logic`) | A04 |
 | `ldap_injection`    | LDAP filter injection (auth bypass / error)               | A03 |
 | `xpath_injection`   | XPath injection (error + boolean)                         | A03 |
 | `cors_advanced`     | null/suffix/substring CORS trust bugs                     | A05 |
@@ -57,6 +74,8 @@ over Rust / TS / JS / Python source trees:
 | `secrets_in_js`     | API keys/tokens leaked in served JS bundles               | A05/A09 |
 | `auth_bruteforce`   | username enumeration + missing rate-limit/lockout (opt-in)| A07 |
 | `blind_oob`         | blind SSRF / stored XSS via a collaborator (opt-in)       | A10/A03 |
+| `race_condition`    | concurrent duplicate-request consistency (opt-in `--race`) | A04 |
+| `request_smuggling` | CL+TE / duplicate-CL framing probes (opt-in `--smuggling`) | A05 |
 | `external`          | wraps installed sqlmap / nikto / nuclei (opt-in)          | — |
 
 Run `pentest --list-checks` (human) or `pentest --list-checks --json`
@@ -69,7 +88,7 @@ pentest/
 ├── src/main.rs            # `pentest` binary — CLI + orchestrator
 ├── crates/
 │   ├── core/              # Finding, Severity, HttpClient (rate-limited), Report
-│   ├── dast/              # 30 network checks + discovery + verify/exploit pass
+│   ├── dast/              # 40 network checks + discovery + verify/exploit pass
 │   ├── sast/              # tree-sitter source-code rule engine (--src)
 │   ├── cve-lookup/        # OSV.dev + NVD matching, cvelistV5 record fetch
 │   └── collaborator/      # `collaborator` binary — OOB listener
@@ -183,6 +202,10 @@ carries `check`, `severity`, `title`, `detail`, `evidence`, `url`, `param`,
 | `--user-field` / `--pass-field` | Login field names (default `username`/`password`) |
 | `--auth-json`     | Send login as JSON instead of form |
 | `--auth-attempts` | Bad-login attempts, max 5 (default 4) |
+| `--race`          | Opt-in: concurrent duplicate-request burst (`race_condition`) |
+| `--smuggling`     | Opt-in: request-smuggling framing probes (http targets) |
+| `--logic`         | Opt-in: out-of-domain values on the target param (`business_logic`) |
+| `--tls-enum`      | Opt-in: TLS version enumeration on https targets (`tls_enum`) |
 | `--json`          | Findings array on stdout, progress on stderr (agent/CI mode) |
 | `--html-out F`    | Write a standalone HTML report |
 | `--no-exploit`    | Skip the verification/proof pass (detection only) |
@@ -210,7 +233,7 @@ After detection, a verification pass turns raw hits into confirmed weaknesses:
 Disable the whole pass with `--no-exploit` (keeps detection only). Example line:
 
 ```
-[CRITICAL] sqli (confirmed): Error-based SQL injection — [GET /product · id] …
+[CRITICAL] sqli (confirmed): Error-based SQL injection — [GET /product · id] … [WSTG-v42-INPV-05 · CWE-89 · CAPEC-66]
            PROOF : DBMS version extracted: 8.0.32-MariaDB (via extractvalue)
            PoC   : curl -sS 'http://host/product?id=1%27'
            fix   : Use parameterized queries / prepared statements; …
@@ -283,10 +306,12 @@ pentest -u "https://staging.myapp.test/item?id=1" -p id --confirm --external
 
 ## Not covered (needs a real DAST / manual testing)
 
-Insecure deserialization, race conditions, business-logic flaws, DOM XSS,
-second-order injection, HTTP request smuggling, and full TLS cipher enumeration.
-Stored/blind XSS is only partially covered (via `blind_oob` + collaborator).
-Pair this with `sqlmap`, OWASP ZAP, `nikto`, `nuclei`, and `testssl.sh`.
+Business-logic flaws beyond the `business_logic` out-of-domain heuristic,
+second-order injection, full TLS cipher-suite enumeration, and real
+deserialization gadget exploitation (`deserialize` detects error
+signatures, it does not execute payloads). Stored/blind XSS is only
+partially covered (via `blind_oob` + collaborator). Pair this with
+`sqlmap`, OWASP ZAP, `nikto`, `nuclei`, and `testssl.sh`.
 
 ## Scope & safety notes
 

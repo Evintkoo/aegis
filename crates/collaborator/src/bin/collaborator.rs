@@ -22,8 +22,14 @@ async fn main() {
         std::process::exit(1);
     });
 
-    println!("[*] Collaborator listening on http://{}:{}", args.host, args.port);
-    println!("    Point blind payloads at http://<reachable-host>:{}/<token>/", args.port);
+    println!(
+        "[*] Collaborator listening on http://{}:{}",
+        args.host, args.port
+    );
+    println!(
+        "    Point blind payloads at http://<reachable-host>:{}/<token>/",
+        args.port
+    );
     println!("    Query hits: GET /__hits/<token>");
 
     let collab = Arc::new(Collaborator::new());

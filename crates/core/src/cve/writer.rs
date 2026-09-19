@@ -121,15 +121,21 @@ impl CveWriter {
         mut record_json: serde_json::Value,
         x_pentest_context: serde_json::Value,
     ) -> Result<PathBuf, WriteRealCveError> {
-        let (year, numeric_id) = parse_cve_id(cve_id).ok_or_else(|| WriteRealCveError::InvalidId(InvalidCveId(cve_id.to_string())))?;
+        let (year, numeric_id) = parse_cve_id(cve_id)
+            .ok_or_else(|| WriteRealCveError::InvalidId(InvalidCveId(cve_id.to_string())))?;
 
         let adp_entry = serde_json::json!({
             "providerMetadata": { "orgId": LOCAL_ASSIGNER_ORG_ID },
             "x_pentest": x_pentest_context,
         });
-        match record_json.get_mut("containers").and_then(|c| c.as_object_mut()) {
+        match record_json
+            .get_mut("containers")
+            .and_then(|c| c.as_object_mut())
+        {
             Some(containers) => {
-                let adp = containers.entry("adp").or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                let adp = containers
+                    .entry("adp")
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
                 match adp.as_array_mut() {
                     Some(arr) => arr.push(adp_entry),
                     None => *adp = serde_json::Value::Array(vec![adp_entry]),
@@ -173,21 +179,41 @@ impl CveWriter {
     /// (matches `[A-Za-z0-9._-]+`) -- it originates from an external HTTP
     /// response, so it's validated defensively before it ever reaches a
     /// filesystem path.
-    pub fn write_native_advisory(&self, native_id: &str, year: u32, record_json: &serde_json::Value, x_pentest_context: serde_json::Value) -> io::Result<PathBuf> {
-        if native_id.is_empty() || !native_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("not a filename-safe advisory ID: {native_id}")));
+    pub fn write_native_advisory(
+        &self,
+        native_id: &str,
+        year: u32,
+        record_json: &serde_json::Value,
+        x_pentest_context: serde_json::Value,
+    ) -> io::Result<PathBuf> {
+        if native_id.is_empty()
+            || !native_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("not a filename-safe advisory ID: {native_id}"),
+            ));
         }
         // Same panic shape as `write_real_cve`'s `containers` indexing:
         // `out["x_pentest"] = ...` below would panic if `record_json` isn't
         // a JSON object at the top level (array/string/number/bool).
         if !record_json.is_object() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("advisory record for {native_id} is not a JSON object")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("advisory record for {native_id} is not a JSON object"),
+            ));
         }
 
         let mut out = record_json.clone();
         out["x_pentest"] = x_pentest_context;
 
-        let path = self.base_dir.join(year.to_string()).join("other").join(format!("{native_id}.json"));
+        let path = self
+            .base_dir
+            .join(year.to_string())
+            .join("other")
+            .join(format!("{native_id}.json"));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -213,7 +239,10 @@ mod tests {
 
     fn temp_test_dir() -> PathBuf {
         let n = TEST_DIR_COUNTER.fetch_add(1, GlobalOrdering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("pentest-core-cve-writer-test-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pentest-core-cve-writer-test-{}-{n}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -227,8 +256,18 @@ mod tests {
         let path1 = writer.write_local(&f).unwrap();
         let path2 = writer.write_local(&f).unwrap();
 
-        assert_eq!(path1, dir.join("2026").join("0xxx").join("PENTEST-LOCAL-2026-000001.json"));
-        assert_eq!(path2, dir.join("2026").join("0xxx").join("PENTEST-LOCAL-2026-000002.json"));
+        assert_eq!(
+            path1,
+            dir.join("2026")
+                .join("0xxx")
+                .join("PENTEST-LOCAL-2026-000001.json")
+        );
+        assert_eq!(
+            path2,
+            dir.join("2026")
+                .join("0xxx")
+                .join("PENTEST-LOCAL-2026-000002.json")
+        );
         assert!(path1.exists());
         let contents = fs::read_to_string(&path1).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
@@ -246,7 +285,12 @@ mod tests {
         }
         let writer2 = CveWriter::new(&dir, 2026).unwrap();
         let path3 = writer2.write_local(&f).unwrap();
-        assert_eq!(path3, dir.join("2026").join("0xxx").join("PENTEST-LOCAL-2026-000003.json"));
+        assert_eq!(
+            path3,
+            dir.join("2026")
+                .join("0xxx")
+                .join("PENTEST-LOCAL-2026-000003.json")
+        );
     }
 
     #[test]
@@ -260,19 +304,35 @@ mod tests {
             "cveMetadata": { "cveId": "CVE-2021-44228" },
             "containers": { "cna": { "descriptions": [{"lang": "en", "value": "Log4Shell"}] } },
         });
-        let ctx = serde_json::json!({ "check": "recon", "component": "log4j-core", "version": "2.14.1" });
+        let ctx =
+            serde_json::json!({ "check": "recon", "component": "log4j-core", "version": "2.14.1" });
 
-        let path = writer.write_real_cve("CVE-2021-44228", fetched, ctx).unwrap();
+        let path = writer
+            .write_real_cve("CVE-2021-44228", fetched, ctx)
+            .unwrap();
 
-        assert_eq!(path, dir.join("2021").join("44xxx").join("CVE-2021-44228.json"));
-        let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            path,
+            dir.join("2021").join("44xxx").join("CVE-2021-44228.json")
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         // The original fetched record's own data survives untouched.
         assert_eq!(parsed["cveMetadata"]["cveId"], "CVE-2021-44228");
-        assert_eq!(parsed["containers"]["cna"]["descriptions"][0]["value"], "Log4Shell");
+        assert_eq!(
+            parsed["containers"]["cna"]["descriptions"][0]["value"],
+            "Log4Shell"
+        );
         // Our detection context lands in an appended adp entry, not mixed
         // into the original cna container.
-        assert_eq!(parsed["containers"]["adp"][0]["x_pentest"]["component"], "log4j-core");
-        assert_eq!(parsed["containers"]["adp"][0]["providerMetadata"]["orgId"], LOCAL_ASSIGNER_ORG_ID);
+        assert_eq!(
+            parsed["containers"]["adp"][0]["x_pentest"]["component"],
+            "log4j-core"
+        );
+        assert_eq!(
+            parsed["containers"]["adp"][0]["providerMetadata"]["orgId"],
+            LOCAL_ASSIGNER_ORG_ID
+        );
     }
 
     #[test]
@@ -287,11 +347,18 @@ mod tests {
             },
         });
 
-        let path = writer.write_real_cve("CVE-2021-44228", fetched, serde_json::json!({})).unwrap();
+        let path = writer
+            .write_real_cve("CVE-2021-44228", fetched, serde_json::json!({}))
+            .unwrap();
 
-        let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let adp = parsed["containers"]["adp"].as_array().unwrap();
-        assert_eq!(adp.len(), 2, "the pre-existing CISA ADP entry must survive alongside ours");
+        assert_eq!(
+            adp.len(),
+            2,
+            "the pre-existing CISA ADP entry must survive alongside ours"
+        );
         assert_eq!(adp[0]["providerMetadata"]["orgId"], "cisa.gov");
         assert_eq!(adp[1]["providerMetadata"]["orgId"], LOCAL_ASSIGNER_ORG_ID);
     }
@@ -300,7 +367,11 @@ mod tests {
     fn write_real_cve_rejects_an_id_that_is_not_cve_shaped() {
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
-        let result = writer.write_real_cve("GHSA-r9p9-mrjm-926w", serde_json::json!({}), serde_json::json!({}));
+        let result = writer.write_real_cve(
+            "GHSA-r9p9-mrjm-926w",
+            serde_json::json!({}),
+            serde_json::json!({}),
+        );
         assert!(matches!(result, Err(WriteRealCveError::InvalidId(_))));
     }
 
@@ -311,7 +382,11 @@ mod tests {
         // graceful, specific error instead.
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
-        let result = writer.write_real_cve("CVE-2021-44228", serde_json::json!([1, 2, 3]), serde_json::json!({}));
+        let result = writer.write_real_cve(
+            "CVE-2021-44228",
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!({}),
+        );
         assert!(matches!(result, Err(WriteRealCveError::NotAnObject)));
     }
 
@@ -319,12 +394,26 @@ mod tests {
     fn write_native_advisory_files_under_year_other_native_id() {
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
-        let record = serde_json::json!({ "id": "GHSA-r9p9-mrjm-926w", "summary": "example advisory" });
+        let record =
+            serde_json::json!({ "id": "GHSA-r9p9-mrjm-926w", "summary": "example advisory" });
 
-        let path = writer.write_native_advisory("GHSA-r9p9-mrjm-926w", 2024, &record, serde_json::json!({ "check": "recon" })).unwrap();
+        let path = writer
+            .write_native_advisory(
+                "GHSA-r9p9-mrjm-926w",
+                2024,
+                &record,
+                serde_json::json!({ "check": "recon" }),
+            )
+            .unwrap();
 
-        assert_eq!(path, dir.join("2024").join("other").join("GHSA-r9p9-mrjm-926w.json"));
-        let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            path,
+            dir.join("2024")
+                .join("other")
+                .join("GHSA-r9p9-mrjm-926w.json")
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(parsed["id"], "GHSA-r9p9-mrjm-926w");
         assert_eq!(parsed["x_pentest"]["check"], "recon");
     }
@@ -333,7 +422,12 @@ mod tests {
     fn write_native_advisory_rejects_a_path_unsafe_id() {
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
-        let result = writer.write_native_advisory("../../etc/passwd", 2024, &serde_json::json!({}), serde_json::json!({}));
+        let result = writer.write_native_advisory(
+            "../../etc/passwd",
+            2024,
+            &serde_json::json!({}),
+            serde_json::json!({}),
+        );
         assert!(result.is_err());
     }
 
@@ -344,9 +438,17 @@ mod tests {
         // graceful `io::Error` instead.
         let dir = temp_test_dir();
         let writer = CveWriter::new(&dir, 2026).unwrap();
-        let result = writer.write_native_advisory("GHSA-r9p9-mrjm-926w", 2024, &serde_json::json!([1, 2, 3]), serde_json::json!({}));
+        let result = writer.write_native_advisory(
+            "GHSA-r9p9-mrjm-926w",
+            2024,
+            &serde_json::json!([1, 2, 3]),
+            serde_json::json!({}),
+        );
         let err = result.expect_err("a non-object record must not panic");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("not a JSON object"), "unexpected error message: {err}");
+        assert!(
+            err.to_string().contains("not a JSON object"),
+            "unexpected error message: {err}"
+        );
     }
 }

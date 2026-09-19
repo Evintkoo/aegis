@@ -12,8 +12,18 @@ use pentest_core::{Finding, HttpClient, HttpRequest, Severity};
 
 pub const NAME: &str = "idor";
 
-async fn fetch(client: &HttpClient, method: &str, param: &str, val: i64, with_auth: bool) -> Option<pentest_core::HttpResponse> {
-    let mut req = if method == "POST" { HttpRequest::post().form_field(param, val.to_string()) } else { HttpRequest::get().param(param, val.to_string()) };
+async fn fetch(
+    client: &HttpClient,
+    method: &str,
+    param: &str,
+    val: i64,
+    with_auth: bool,
+) -> Option<pentest_core::HttpResponse> {
+    let mut req = if method == "POST" {
+        HttpRequest::post().form_field(param, val.to_string())
+    } else {
+        HttpRequest::get().param(param, val.to_string())
+    };
     req = req.no_redirects();
     if !with_auth {
         req = req.header("Authorization", "").header("Cookie", "");
@@ -40,13 +50,19 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
     };
     let others = [n - 1, n + 1, 1, 1000];
     let mut accessible = Vec::new();
+    let mut first_hit_body = String::new();
     for &o in &others {
         if o == n || o < 0 {
             continue;
         }
-        let Some(r) = fetch(client, &method, param, o, true).await else { continue };
+        let Some(r) = fetch(client, &method, param, o, true).await else {
+            continue;
+        };
         let sim = similarity(&r.body, &mine.body);
         if r.status == 200 && sim > 0.5 && sim < 0.98 && r.body != mine.body {
+            if accessible.is_empty() {
+                first_hit_body = r.body.clone();
+            }
             accessible.push(o);
         }
     }
@@ -61,10 +77,20 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
 
         if client.header("Authorization").is_some() || client.header("Cookie").is_some() {
             if let Some(noauth) = fetch(client, &method, param, accessible[0], false).await {
-                if noauth.status == 200 && !noauth.body.is_empty() {
+                let sim = similarity(&noauth.body, &first_hit_body);
+                if noauth.status == 200 && sim >= 0.95 {
                     out.push(
-                        Finding::new(NAME, Severity::Critical, "Object reachable WITHOUT authentication", format!("id {} returned 200 with auth stripped", accessible[0]))
-                            .with_evidence(format!("HTTP {}", noauth.status)),
+                        Finding::new(
+                            NAME,
+                            Severity::Critical,
+                            "Object reachable WITHOUT authentication",
+                            format!(
+                                "id {} returned the same object with auth stripped ({:.0}% body match)",
+                                accessible[0],
+                                sim * 100.0
+                            ),
+                        )
+                        .with_evidence(format!("HTTP {}", noauth.status)),
                     );
                 }
             }
@@ -82,7 +108,11 @@ mod tests {
     #[tokio::test]
     async fn detects_idor_and_no_auth_escalation() {
         let base = scripted_server(|req, _| {
-            let id: i64 = req.query.get("id").and_then(|v| v.parse().ok()).unwrap_or(-1);
+            let id: i64 = req
+                .query
+                .get("id")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-1);
             match id {
                 42 => ScriptedResponse::ok("{\"id\":42,\"owner\":\"me\",\"secret\":\"aaa\"}"),
                 // Reachable regardless of auth -- the vulnerability this
@@ -96,21 +126,40 @@ mod tests {
         })
         .await;
         let mut headers = std::collections::HashMap::new();
-        headers.insert("Authorization".to_string(), "Bearer secret-token".to_string());
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), headers, ..HttpClientConfig::default() };
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            headers,
+            ..HttpClientConfig::default()
+        };
         let client = HttpClient::new(base, config);
-        let opts = Opts { param: Some("id".to_string()), base_value: "42".to_string(), ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "42".to_string(),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "Possible IDOR / broken object-level authz"));
-        assert!(findings.iter().any(|f| f.title == "Object reachable WITHOUT authentication"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Possible IDOR / broken object-level authz"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Object reachable WITHOUT authentication"));
     }
 
     #[tokio::test]
     async fn no_escalation_finding_when_no_auth_header_configured() {
         let base = scripted_server(|req, _| {
-            let id: i64 = req.query.get("id").and_then(|v| v.parse().ok()).unwrap_or(-1);
+            let id: i64 = req
+                .query
+                .get("id")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-1);
             match id {
                 42 => ScriptedResponse::ok("{\"id\":42,\"owner\":\"me\",\"secret\":\"aaa\"}"),
                 41 => ScriptedResponse::ok("{\"id\":41,\"owner\":\"other-a\",\"secret\":\"bbb\"}"),
@@ -119,20 +168,142 @@ mod tests {
             }
         })
         .await;
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         let client = HttpClient::new(base, config);
-        let opts = Opts { param: Some("id".to_string()), base_value: "42".to_string(), ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "42".to_string(),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "Possible IDOR / broken object-level authz"));
-        assert!(!findings.iter().any(|f| f.title == "Object reachable WITHOUT authentication"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Possible IDOR / broken object-level authz"));
+        assert!(!findings
+            .iter()
+            .any(|f| f.title == "Object reachable WITHOUT authentication"));
+    }
+
+    #[tokio::test]
+    async fn no_escalation_finding_when_unauthenticated_body_differs() {
+        let base = scripted_server(|req, _| {
+            let authed = req.headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("authorization") && v == "Bearer secret-token"
+            });
+            let id: i64 = req
+                .query
+                .get("id")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-1);
+            if authed {
+                match id {
+                    42 => ScriptedResponse::ok("{\"id\":42,\"owner\":\"me\",\"secret\":\"aaa\"}"),
+                    41 => ScriptedResponse::ok("{\"id\":41,\"owner\":\"other-a\",\"secret\":\"bbb\"}"),
+                    43 => ScriptedResponse::ok("{\"id\":43,\"owner\":\"other-b\",\"secret\":\"ccc\"}"),
+                    _ => ScriptedResponse::ok("not found"),
+                }
+            } else {
+                ScriptedResponse::ok(
+                    "<html><body>Welcome to our single-page application catch-all route</body></html>",
+                )
+            }
+        })
+        .await;
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            headers,
+            ..HttpClientConfig::default()
+        };
+        let client = HttpClient::new(base, config);
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "42".to_string(),
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Possible IDOR / broken object-level authz"));
+        assert!(!findings
+            .iter()
+            .any(|f| f.title == "Object reachable WITHOUT authentication"));
+    }
+
+    #[tokio::test]
+    async fn escalation_finding_reports_body_match_evidence() {
+        let base = scripted_server(|req, _| {
+            let authed = req.headers.iter().any(|(k, v)| {
+                k.eq_ignore_ascii_case("authorization") && v == "Bearer secret-token"
+            });
+            let id: i64 = req
+                .query
+                .get("id")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-1);
+            match (authed, id) {
+                (true, 42) => {
+                    ScriptedResponse::ok("{\"id\":42,\"owner\":\"me\",\"secret\":\"aaa\"}")
+                }
+                (_, 41) => {
+                    ScriptedResponse::ok("{\"id\":41,\"owner\":\"other-a\",\"secret\":\"bbb\"}")
+                }
+                (true, 43) => {
+                    ScriptedResponse::ok("{\"id\":43,\"owner\":\"other-b\",\"secret\":\"ccc\"}")
+                }
+                _ => ScriptedResponse::ok("not found"),
+            }
+        })
+        .await;
+        let mut headers = std::collections::HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            headers,
+            ..HttpClientConfig::default()
+        };
+        let client = HttpClient::new(base, config);
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "42".to_string(),
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        let fnd = findings
+            .iter()
+            .find(|f| f.title == "Object reachable WITHOUT authentication")
+            .expect("escalation finding expected");
+        assert_eq!(fnd.severity, Severity::Critical);
+        assert!(fnd
+            .detail
+            .contains("id 41 returned the same object with auth stripped"));
+        assert!(fnd.detail.contains("100% body match"));
     }
 
     #[tokio::test]
     async fn no_findings_when_only_own_object_is_reachable() {
         let base = scripted_server(|req, _| {
-            let id: i64 = req.query.get("id").and_then(|v| v.parse().ok()).unwrap_or(-1);
+            let id: i64 = req
+                .query
+                .get("id")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(-1);
             if id == 42 {
                 ScriptedResponse::ok("{\"id\":42,\"secret\":\"aaa\"}")
             } else {
@@ -140,9 +311,16 @@ mod tests {
             }
         })
         .await;
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         let client = HttpClient::new(base, config);
-        let opts = Opts { param: Some("id".to_string()), base_value: "42".to_string(), ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "42".to_string(),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -152,9 +330,16 @@ mod tests {
     #[tokio::test]
     async fn returns_empty_without_a_numeric_base_value() {
         let base = scripted_server(|_req, _| ScriptedResponse::ok("ok")).await;
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         let client = HttpClient::new(base, config);
-        let opts = Opts { param: Some("id".to_string()), base_value: "not-a-number".to_string(), ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            base_value: "not-a-number".to_string(),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 

@@ -1,5 +1,7 @@
+pub mod api_docs;
 pub mod auth_bruteforce;
 pub mod blind_oob;
+pub mod business_logic;
 pub mod cache_deception;
 pub mod clickjacking;
 pub mod cmdi;
@@ -7,23 +9,31 @@ pub mod content_discovery;
 pub mod cors_advanced;
 pub mod crlf;
 pub mod csrf;
+pub mod debug_endpoints;
+pub mod deserialize;
+pub mod dom_xss;
 pub mod external;
 pub mod files;
 pub mod graphql;
 pub mod headers;
 pub mod host_header;
+pub mod hpp;
 pub mod idor;
 pub mod info_disclosure;
 pub mod jwt;
 pub mod ldap_injection;
+pub mod log4shell;
 pub mod method_tampering;
 pub mod nosqli;
+pub mod race_condition;
 pub mod recon;
 pub mod redirect;
+pub mod request_smuggling;
 pub mod secrets_in_js;
 pub mod sqli;
 pub mod ssrf;
 pub mod ssti;
+pub mod tls_enum;
 pub mod traversal;
 pub mod xpath_injection;
 pub mod xss;
@@ -64,7 +74,12 @@ pub(crate) fn similarity(a: &str, b: &str) -> f64 {
 /// need it too. Distinct from `HttpClient::base_url_root()`, which drops
 /// the path entirely rather than just the query string.
 pub(crate) fn path_root(base_url: &str) -> String {
-    base_url.split('?').next().unwrap_or(base_url).trim_end_matches('/').to_string()
+    base_url
+        .split('?')
+        .next()
+        .unwrap_or(base_url)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 #[cfg(test)]
@@ -78,36 +93,61 @@ mod tests {
             if req.query.get("id").map(|v| v.as_str()) == Some("SLEEP") {
                 ScriptedResponse::delayed("slow", 150)
             } else {
-                ScriptedResponse::ok(format!("got:{}", req.query.get("id").cloned().unwrap_or_default()))
+                ScriptedResponse::ok(format!(
+                    "got:{}",
+                    req.query.get("id").cloned().unwrap_or_default()
+                ))
             }
         })
         .await;
         let client = HttpClient::new(base, HttpClientConfig::default());
 
-        let r1 = client.request(HttpRequest::get().param("id", "1")).await.unwrap();
+        let r1 = client
+            .request(HttpRequest::get().param("id", "1"))
+            .await
+            .unwrap();
         assert_eq!(r1.body, "got:1");
 
         let start = std::time::Instant::now();
-        let r2 = client.request(HttpRequest::get().param("id", "SLEEP")).await.unwrap();
+        let r2 = client
+            .request(HttpRequest::get().param("id", "SLEEP"))
+            .await
+            .unwrap();
         assert_eq!(r2.body, "slow");
         assert!(start.elapsed() >= std::time::Duration::from_millis(140));
 
-        let r3 = client.request(HttpRequest::post().form_field("id", "3")).await.unwrap();
+        let r3 = client
+            .request(HttpRequest::post().form_field("id", "3"))
+            .await
+            .unwrap();
         assert_eq!(r3.status, 200);
     }
 
     #[tokio::test]
     async fn request_level_header_overrides_client_level_header() {
         let base = scripted_server(|req, _self_url| {
-            let auth: Vec<_> = req.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("Authorization")).collect();
-            ScriptedResponse::ok(format!("count={} val={:?}", auth.len(), auth.first().map(|(_, v)| v.clone())))
+            let auth: Vec<_> = req
+                .headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
+                .collect();
+            ScriptedResponse::ok(format!(
+                "count={} val={:?}",
+                auth.len(),
+                auth.first().map(|(_, v)| v.clone())
+            ))
         })
         .await;
         let mut config = HttpClientConfig::default();
-        config.headers.insert("Authorization".to_string(), "secret".to_string());
+        config
+            .headers
+            .insert("Authorization".to_string(), "secret".to_string());
         let client = HttpClient::new(base, config);
 
-        let r = client.request(HttpRequest::get().header("Authorization", "")).await.unwrap();
+        let r = client
+            .request(HttpRequest::get().header("Authorization", ""))
+            .await
+            .unwrap();
         assert_eq!(r.body, "count=1 val=Some(\"\")");
         assert!(client.header("authorization").is_some());
     }

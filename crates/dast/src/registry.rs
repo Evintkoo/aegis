@@ -41,7 +41,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_check_entry_can_be_invoked_through_the_fn_pointer() {
-        let entry = CheckEntry { name: "fake", run: fake_check };
+        let entry = CheckEntry {
+            name: "fake",
+            run: fake_check,
+        };
         let client = HttpClient::new("http://127.0.0.1:1", HttpClientConfig::default());
         let opts = Opts::default();
 

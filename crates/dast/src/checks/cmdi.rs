@@ -18,8 +18,17 @@ static ERROR_MARKERS: LazyLock<regex::Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-async fn send(client: &HttpClient, method: &str, param: &str, val: &str) -> Option<pentest_core::HttpResponse> {
-    let req = if method == "POST" { HttpRequest::post().form_field(param, val) } else { HttpRequest::get().param(param, val) };
+async fn send(
+    client: &HttpClient,
+    method: &str,
+    param: &str,
+    val: &str,
+) -> Option<pentest_core::HttpResponse> {
+    let req = if method == "POST" {
+        HttpRequest::post().form_field(param, val)
+    } else {
+        HttpRequest::get().param(param, val)
+    };
     client.request(req).await.ok()
 }
 
@@ -40,12 +49,24 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         return out;
     };
 
-    for p in [format!("{base}; id"), format!("{base}| id"), format!("{base}`id`"), format!("{base}; cat /etc/passwd")] {
-        let Some(r) = send(client, &method, param, &p).await else { continue };
+    for p in [
+        format!("{base}; id"),
+        format!("{base}| id"),
+        format!("{base}`id`"),
+        format!("{base}; cat /etc/passwd"),
+    ] {
+        let Some(r) = send(client, &method, param, &p).await else {
+            continue;
+        };
         if let Some(m) = ERROR_MARKERS.find(&r.body) {
             if p.find(m.as_str()).is_none() && ERROR_MARKERS.find(&baseline.body).is_none() {
-                let mut f = Finding::new(NAME, Severity::Critical, "OS command injection (in-band)", format!("payload {p:?} produced command output"))
-                    .with_evidence(m.as_str());
+                let mut f = Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    "OS command injection (in-band)",
+                    format!("payload {p:?} produced command output"),
+                )
+                .with_evidence(m.as_str());
                 f.payload = p.clone();
                 f.proof = format!("command output leaked: {}", m.as_str());
                 out.push(f);
@@ -63,20 +84,30 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         format!("{base}& ping -n {n} 127.0.0.1"),
     ];
     for p in &time_payloads {
-        let Some(r) = send(client, &method, param, p).await else { continue };
+        let Some(r) = send(client, &method, param, p).await else {
+            continue;
+        };
         let elapsed = r.elapsed.as_secs_f64();
         let baseline_elapsed = baseline.elapsed.as_secs_f64();
         if elapsed >= n as f64 * 0.8 && elapsed > baseline_elapsed + n as f64 * 0.6 {
-            let mut fnd = Finding::new(
-                NAME,
-                Severity::Critical,
-                "Blind OS command injection (time-based)",
-                format!("payload delayed response to {elapsed:.1}s (baseline {baseline_elapsed:.1}s)"),
-            )
-            .with_evidence(p.clone());
-            fnd.payload = p.clone();
-            out.push(fnd);
-            break;
+            let Some(r2) = send(client, &method, param, p).await else {
+                continue;
+            };
+            let elapsed2 = r2.elapsed.as_secs_f64();
+            if elapsed2 >= n as f64 * 0.8 && elapsed2 > baseline_elapsed + n as f64 * 0.6 {
+                let mut fnd = Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    "Blind OS command injection (time-based)",
+                    format!(
+                        "payload delayed response to {elapsed:.1}s, confirmed on repeat at {elapsed2:.1}s (baseline {baseline_elapsed:.1}s)"
+                    ),
+                )
+                .with_evidence(p.clone());
+                fnd.payload = p.clone();
+                out.push(fnd);
+                break;
+            }
         }
     }
     out
@@ -87,9 +118,14 @@ mod tests {
     use super::*;
     use crate::checks::test_support::{scripted_server, ScriptedResponse};
     use pentest_core::HttpClientConfig;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn fast_client(base_url: String) -> HttpClient {
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         HttpClient::new(base_url, config)
     }
 
@@ -105,7 +141,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("host".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("host".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -122,11 +161,18 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("host".to_string()), sleep: 1, ..Opts::default() };
+        let opts = Opts {
+            param: Some("host".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.is_empty(), "reflecting the raw payload text back must not itself count as command output");
+        assert!(
+            findings.is_empty(),
+            "reflecting the raw payload text back must not itself count as command output"
+        );
     }
 
     #[tokio::test]
@@ -141,11 +187,53 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("host".to_string()), sleep: 1, ..Opts::default() };
+        let opts = Opts {
+            param: Some("host".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "Blind OS command injection (time-based)"));
+        let fnd = findings
+            .iter()
+            .find(|f| f.title == "Blind OS command injection (time-based)")
+            .expect("consistently slow payload must be flagged");
+        assert_eq!(fnd.severity, Severity::Critical);
+        assert!(
+            fnd.detail.contains("repeat"),
+            "detail must mention the repeated confirmation, got: {fnd:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_time_based_finding_from_a_single_slow_response() {
+        let slow_once = Arc::new(AtomicBool::new(false));
+        let hit = Arc::clone(&slow_once);
+        let base = scripted_server(move |req, _| {
+            let v = req.query.get("host").cloned().unwrap_or_default();
+            let slow =
+                (v.contains("sleep") || v.contains("ping")) && !hit.swap(true, Ordering::SeqCst);
+            if slow {
+                ScriptedResponse::delayed("ok", 850)
+            } else {
+                ScriptedResponse::ok("ok")
+            }
+        })
+        .await;
+        let client = fast_client(base);
+        let opts = Opts {
+            param: Some("host".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        assert!(
+            findings.is_empty(),
+            "one slow response must not count as blind OS command injection"
+        );
     }
 
     #[tokio::test]

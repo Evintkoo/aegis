@@ -9,10 +9,12 @@ use std::sync::LazyLock;
 
 pub const NAME: &str = "secrets_in_js";
 
-static SCRIPT_SRC_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(?i)<script[^>]+src\s*=\s*["']?([^"'> ]+)"#).unwrap());
+static SCRIPT_SRC_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"(?i)<script[^>]+src\s*=\s*["']?([^"'> ]+)"#).unwrap());
 
-static SECRET_PATTERNS: LazyLock<Vec<(regex::Regex, Severity, &'static str)>> = LazyLock::new(|| {
-    vec![
+static SECRET_PATTERNS: LazyLock<Vec<(regex::Regex, Severity, &'static str)>> = LazyLock::new(
+    || {
+        vec![
         (regex::Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(), Severity::Critical, "AWS access key id"),
         (regex::Regex::new(r"AIza[0-9A-Za-z_\-]{35}").unwrap(), Severity::High, "Google API key"),
         (regex::Regex::new(r"sk_live_[0-9a-zA-Z]{24,}").unwrap(), Severity::Critical, "Stripe live secret key"),
@@ -27,7 +29,8 @@ static SECRET_PATTERNS: LazyLock<Vec<(regex::Regex, Severity, &'static str)>> = 
         ),
         (regex::Regex::new(r"AIzaSy[A-Za-z0-9_\-]{33}").unwrap(), Severity::High, "Firebase/Google key"),
     ]
-});
+    },
+);
 
 fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
     a.host_str() == b.host_str() && a.port() == b.port()
@@ -39,9 +42,13 @@ pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
 
 async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     let mut out = Vec::new();
-    let Ok(r) = client.request(HttpRequest::get()).await else { return out };
+    let Ok(r) = client.request(HttpRequest::get()).await else {
+        return out;
+    };
     let base = client.base_url();
-    let Ok(origin) = reqwest::Url::parse(base) else { return out };
+    let Ok(origin) = reqwest::Url::parse(base) else {
+        return out;
+    };
 
     let mut same_origin_urls = Vec::new();
     let mut seen_src = HashSet::new();
@@ -68,7 +75,15 @@ async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
         for (re, sev, label) in SECRET_PATTERNS.iter() {
             for m in re.find_iter(text) {
                 let masked = format!("{}…", m.as_str().chars().take(12).collect::<String>());
-                out.push(Finding::new(NAME, *sev, format!("{label} exposed in JS/HTML"), format!("found in {where_}")).with_evidence(masked));
+                out.push(
+                    Finding::new(
+                        NAME,
+                        *sev,
+                        format!("{label} exposed in JS/HTML"),
+                        format!("found in {where_}"),
+                    )
+                    .with_evidence(masked),
+                );
             }
         }
     }
@@ -92,17 +107,29 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
     async fn detects_an_aws_key_leaked_in_inline_html() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("<html><script>var k='AKIAABCDEFGHIJKLMNOP';</script></html>")).await;
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("<html><script>var k='AKIAABCDEFGHIJKLMNOP';</script></html>")
+        })
+        .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "AWS access key id exposed in JS/HTML" && f.detail.contains("inline HTML")));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "AWS access key id exposed in JS/HTML"
+                && f.detail.contains("inline HTML")));
     }
 
     #[tokio::test]
@@ -119,12 +146,17 @@ mod tests {
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "Stripe live secret key exposed in JS/HTML" && f.detail.contains("/bundle.js")));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Stripe live secret key exposed in JS/HTML"
+                && f.detail.contains("/bundle.js")));
     }
 
     #[tokio::test]
     async fn no_findings_on_a_clean_page() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("<html><body>hello</body></html>")).await;
+        let base =
+            scripted_server(|_req, _| ScriptedResponse::ok("<html><body>hello</body></html>"))
+                .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;

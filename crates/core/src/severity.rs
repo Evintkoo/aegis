@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
@@ -30,7 +30,10 @@ mod tests {
     fn critical_sorts_before_info() {
         let mut v = vec![Severity::Info, Severity::Critical, Severity::Medium];
         v.sort();
-        assert_eq!(v, vec![Severity::Critical, Severity::Medium, Severity::Info]);
+        assert_eq!(
+            v,
+            vec![Severity::Critical, Severity::Medium, Severity::Info]
+        );
     }
 
     #[test]

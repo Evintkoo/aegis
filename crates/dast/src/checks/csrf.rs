@@ -8,11 +8,18 @@ use std::sync::LazyLock;
 
 pub const NAME: &str = "csrf";
 
-static FORM_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?is)(<form\b[^>]*>.*?</form>)").unwrap());
-static METHOD_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(?i)method\s*=\s*["']?\s*post"#).unwrap());
-static ACTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(?i)action\s*=\s*["']([^"']*)["']"#).unwrap());
-static TOKEN_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r#"(?i)name\s*=\s*["']([^"']*(csrf|token|nonce|authenticity|_token|xsrf)[^"']*)["']"#).unwrap());
+static FORM_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?is)(<form\b[^>]*>.*?</form>)").unwrap());
+static METHOD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"(?i)method\s*=\s*["']?\s*post"#).unwrap());
+static ACTION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"(?i)action\s*=\s*["']([^"']*)["']"#).unwrap());
+static TOKEN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?i)name\s*=\s*["']([^"']*(csrf|token|nonce|authenticity|_token|xsrf)[^"']*)["']"#,
+    )
+    .unwrap()
+});
 
 pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
     Box::pin(run_impl(client, opts))
@@ -20,17 +27,34 @@ pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
 
 async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     let mut out = Vec::new();
-    let Ok(r) = client.request(HttpRequest::get()).await else { return out };
+    let Ok(r) = client.request(HttpRequest::get()).await else {
+        return out;
+    };
 
     for cap in FORM_RE.captures_iter(&r.body) {
         let form_body = &cap[1];
         let is_post = METHOD_RE.is_match(form_body);
         let has_token = TOKEN_RE.is_match(form_body);
-        let action_s = ACTION_RE.captures(form_body).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()).unwrap_or_else(|| "(same URL)".to_string());
+        let action_s = ACTION_RE
+            .captures(form_body)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "(same URL)".to_string());
         if is_post && !has_token {
             out.push(
-                Finding::new(NAME, Severity::Medium, "POST form without anti-CSRF token", format!("form action={action_s} has no hidden CSRF token field"))
-                    .with_evidence(form_body.chars().take(100).collect::<String>().replace('\n', " ")),
+                Finding::new(
+                    NAME,
+                    Severity::Medium,
+                    "POST form without anti-CSRF token",
+                    format!("form action={action_s} has no hidden CSRF token field"),
+                )
+                .with_evidence(
+                    form_body
+                        .chars()
+                        .take(100)
+                        .collect::<String>()
+                        .replace('\n', " "),
+                ),
             );
         }
     }
@@ -40,8 +64,13 @@ async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
         if k.eq_ignore_ascii_case("set-cookie") && !v.to_lowercase().contains("samesite") {
             let cookie = v.split('=').next().unwrap_or(v);
             out.push(
-                Finding::new(NAME, Severity::Low, format!("Cookie '{cookie}' lacks SameSite"), "SameSite absent weakens CSRF defense-in-depth")
-                    .with_evidence(v.chars().take(80).collect::<String>()),
+                Finding::new(
+                    NAME,
+                    Severity::Low,
+                    format!("Cookie '{cookie}' lacks SameSite"),
+                    "SameSite absent weakens CSRF defense-in-depth",
+                )
+                .with_evidence(v.chars().take(80).collect::<String>()),
             );
         }
     }
@@ -55,7 +84,13 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
@@ -68,7 +103,10 @@ mod tests {
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "POST form without anti-CSRF token" && f.detail.contains("/transfer")));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "POST form without anti-CSRF token"
+                && f.detail.contains("/transfer")));
     }
 
     #[tokio::test]
@@ -86,7 +124,10 @@ mod tests {
 
     #[tokio::test]
     async fn flags_a_cookie_missing_samesite() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("<html></html>").header("Set-Cookie", "session=abc; HttpOnly")).await;
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("<html></html>").header("Set-Cookie", "session=abc; HttpOnly")
+        })
+        .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;

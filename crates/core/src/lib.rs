@@ -4,6 +4,7 @@ pub mod finding;
 pub mod http;
 pub mod report;
 pub mod severity;
+pub mod standards;
 
 pub use confidence::Confidence;
 pub use finding::Finding;

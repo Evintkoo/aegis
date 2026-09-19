@@ -1,4 +1,4 @@
-//! Tree-sitter-query-based rules (5 of the 6 SAST rules; the 6th,
+//! Tree-sitter-query-based rules (10 of the 11 SAST rules; the 11th,
 //! hardcoded secrets, is deliberately regex-based -- see `secrets.rs`).
 //!
 //! Each rule carries a tree-sitter query per language it applies to. A
@@ -226,6 +226,394 @@ pub fn all_rules() -> Vec<QueryRule> {
                 ),
             ],
         },
+        QueryRule {
+            check: "sast_ssrf",
+            cwe: "CWE-918",
+            severity: Severity::High,
+            title: "Outbound HTTP request URL built from non-literal input",
+            remediation: "Allow-list outbound hosts/URLs and resolve them from config, never from user input; block internal/link-local ranges before requesting.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(call
+                        function: (attribute object: (identifier) @obj attribute: (identifier) @fn)
+                        arguments: (argument_list (binary_operator) @concat)
+                        (#eq? @obj "requests")
+                        (#match? @fn "^(get|post|put|delete|head|request)$")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: [
+                          (identifier) @fn
+                          (member_expression property: (property_identifier) @fn)
+                        ]
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(fetch|get|post|put|request)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: [
+                          (identifier) @fn
+                          (member_expression property: (property_identifier) @fn)
+                        ]
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(fetch|get|post|put|request)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: [
+                          (identifier) @fn
+                          (member_expression property: (property_identifier) @fn)
+                        ]
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(fetch|get|post|put|request)$")) @sink"#,
+                ),
+                (
+                    Lang::Rust,
+                    r#"(call_expression
+                        function: (scoped_identifier path: (identifier) @obj name: (identifier) @fn)
+                        arguments: (arguments [
+                          (macro_invocation)
+                          (reference_expression (macro_invocation))
+                        ])
+                        (#eq? @obj "reqwest")
+                        (#eq? @fn "get")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_open_redirect",
+            cwe: "CWE-601",
+            severity: Severity::Medium,
+            title: "Redirect target derived from non-literal input",
+            remediation: "Validate redirect targets against an allow-list of hosts/paths; never redirect to a URL taken verbatim from the request.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(call
+                        function: (identifier) @fn
+                        arguments: (argument_list [
+                          (binary_operator)
+                          (call)
+                          (attribute)
+                        ])
+                        (#eq? @fn "redirect")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                          (call_expression)
+                        ])
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments
+                          (member_expression
+                            object: (member_expression object: (identifier) @reqid)
+                            property: (property_identifier)))
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")
+                        (#match? @reqid "^(req|request)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                          (call_expression)
+                        ])
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments
+                          (member_expression
+                            object: (member_expression object: (identifier) @reqid)
+                            property: (property_identifier)))
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")
+                        (#match? @reqid "^(req|request)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                          (call_expression)
+                        ])
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments
+                          (member_expression
+                            object: (member_expression object: (identifier) @reqid)
+                            property: (property_identifier)))
+                        (#match? @fn "^(redirect|sendRedirect|http_redirect)$")
+                        (#match? @reqid "^(req|request)$")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_xss_sink",
+            cwe: "CWE-79",
+            severity: Severity::Medium,
+            title: "HTML sink assigned non-literal content (DOM XSS)",
+            remediation: "Assign untrusted data only via textContent / safe DOM APIs, or sanitize with DOMPurify; never innerHTML/document.write with dynamic strings.",
+            queries: &[
+                (
+                    Lang::JavaScript,
+                    r#"(assignment_expression
+                        left: (member_expression property: (property_identifier) @prop)
+                        right: [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ]
+                        (#match? @prop "^(innerHTML|outerHTML|insertAdjacentHTML)$")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(write|writeln)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(assignment_expression
+                        left: (member_expression property: (property_identifier) @prop)
+                        right: [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ]
+                        (#match? @prop "^(innerHTML|outerHTML|insertAdjacentHTML)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(write|writeln)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(assignment_expression
+                        left: (member_expression property: (property_identifier) @prop)
+                        right: [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ]
+                        (#match? @prop "^(innerHTML|outerHTML|insertAdjacentHTML)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments [
+                          (template_string)
+                          (binary_expression operator: "+")
+                        ])
+                        (#match? @fn "^(write|writeln)$")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_tls_verify_disabled",
+            cwe: "CWE-295",
+            severity: Severity::High,
+            title: "TLS certificate verification disabled",
+            remediation: "Never disable certificate verification in production; pin a custom CA or the expected leaf cert instead.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(keyword_argument
+                        name: (identifier) @kw
+                        value: (false)
+                        (#eq? @kw "verify")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(pair
+                        key: (property_identifier) @k
+                        value: (false)
+                        (#eq? @k "rejectUnauthorized")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(pair
+                        key: (property_identifier) @k
+                        value: (false)
+                        (#eq? @k "rejectUnauthorized")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(pair
+                        key: (property_identifier) @k
+                        value: (false)
+                        (#eq? @k "rejectUnauthorized")) @sink"#,
+                ),
+                (
+                    Lang::Rust,
+                    r#"(call_expression
+                        function: [
+                          (field_expression field: (field_identifier) @m)
+                          (scoped_identifier name: (identifier) @m)
+                        ]
+                        arguments: (arguments (boolean_literal))
+                        (#match? @m "^(danger_accept_invalid_certs|danger_accept_invalid_hostnames)$")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_xpath_injection",
+            cwe: "CWE-643",
+            severity: Severity::High,
+            title: "XPath query built via string concatenation",
+            remediation: "Build XPath with parameterized/precompiled expressions; never concatenate input into the query string.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(call
+                        function: (attribute attribute: (identifier) @fn)
+                        arguments: (argument_list (binary_operator) @concat)
+                        (#match? @fn "^(xpath|evaluate|find|findall|findtext)$")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(evaluate|select|select1|find)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(evaluate|select|select1|find)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(evaluate|select|select1|find)$")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_ldap_injection",
+            cwe: "CWE-90",
+            severity: Severity::High,
+            title: "LDAP filter built via string concatenation",
+            remediation: "Escape LDAP special characters (RFC 4515) or use parameterized LDAP APIs; never concatenate input into a filter.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(call
+                        function: (attribute attribute: (identifier) @fn)
+                        arguments: (argument_list
+                          (keyword_argument
+                            name: (identifier) @kw
+                            value: (binary_operator) @concat))
+                        (#match? @fn "^(search|extend)$")
+                        (#match? @kw "^(search_filter|filter|attributes)$")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(search|bind|add|modify)$")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(search|bind|add|modify)$")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(call_expression
+                        function: (member_expression property: (property_identifier) @fn)
+                        arguments: (arguments (binary_expression operator: "+"))
+                        (#match? @fn "^(search|bind|add|modify)$")) @sink"#,
+                ),
+            ],
+        },
+        QueryRule {
+            check: "sast_weak_random",
+            cwe: "CWE-338",
+            severity: Severity::Medium,
+            title: "Security value generated from a weak PRNG",
+            remediation: "Use a cryptographically secure generator (secrets module in Python, crypto.randomBytes/WebCrypto in JS) for tokens, keys, and session identifiers.",
+            queries: &[
+                (
+                    Lang::Python,
+                    r#"(assignment
+                        left: (identifier) @dest
+                        right: (_) @rhs
+                        (#match? @rhs "random\.(randint|randrange|random|choice|choices|getrandbits|uniform)")
+                        (#match? @dest "(token|Token|TOKEN|secret|Secret|SECRET|password|Password|PASSWORD|passwd|otp|OTP|nonce|Nonce|salt|Salt|session|Session|csrf|Csrf|CSRF|api[_]?key|API[_]?KEY|Api[_]?Key)")) @sink"#,
+                ),
+                (
+                    Lang::JavaScript,
+                    r#"(variable_declarator
+                        name: (identifier) @dest
+                        value: (_) @rhs
+                        (#match? @rhs "Math\.random")
+                        (#match? @dest "(token|Token|TOKEN|secret|Secret|SECRET|password|Password|PASSWORD|otp|OTP|nonce|Nonce|salt|Salt|session|Session|csrf|Csrf|CSRF|api[_]?key|API[_]?KEY|Api[_]?Key)")) @sink"#,
+                ),
+                (
+                    Lang::TypeScript,
+                    r#"(variable_declarator
+                        name: (identifier) @dest
+                        value: (_) @rhs
+                        (#match? @rhs "Math\.random")
+                        (#match? @dest "(token|Token|TOKEN|secret|Secret|SECRET|password|Password|PASSWORD|otp|OTP|nonce|Nonce|salt|Salt|session|Session|csrf|Csrf|CSRF|api[_]?key|API[_]?KEY|Api[_]?Key)")) @sink"#,
+                ),
+                (
+                    Lang::Tsx,
+                    r#"(variable_declarator
+                        name: (identifier) @dest
+                        value: (_) @rhs
+                        (#match? @rhs "Math\.random")
+                        (#match? @dest "(token|Token|TOKEN|secret|Secret|SECRET|password|Password|PASSWORD|otp|OTP|nonce|Nonce|salt|Salt|session|Session|csrf|Csrf|CSRF|api[_]?key|API[_]?KEY|Api[_]?Key)")) @sink"#,
+                ),
+            ],
+        },
     ]
 }
 
@@ -233,7 +621,12 @@ pub fn all_rules() -> Vec<QueryRule> {
 /// appends a `Finding` per match. `path` and `source` are used only to
 /// build evidence text (file:line + the matched snippet); no
 /// dedicated file-path field exists on `Finding`.
-pub fn scan_file(rules: &[QueryRule], lang: Lang, path: &std::path::Path, source: &[u8]) -> Vec<Finding> {
+pub fn scan_file(
+    rules: &[QueryRule],
+    lang: Lang,
+    path: &std::path::Path,
+    source: &[u8],
+) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut parser = Parser::new();
     if parser.set_language(&lang.ts_language()).is_err() {
@@ -256,13 +649,20 @@ pub fn scan_file(rules: &[QueryRule], lang: Lang, path: &std::path::Path, source
             let mut matches = cursor.matches(&query, tree.root_node(), source);
             while let Some(m) = matches.next() {
                 let Some(sink_ix) = sink_ix else { continue };
-                let Some(cap) = m.captures().iter().find(|c| c.index == sink_ix) else { continue };
+                let Some(cap) = m.captures().iter().find(|c| c.index == sink_ix) else {
+                    continue;
+                };
                 let node = cap.node;
                 let text = node.utf8_text(source).unwrap_or("").trim();
                 let snippet: String = text.chars().take(120).collect();
                 let line = node.start_position().row + 1;
-                let mut f = Finding::new(rule.check, rule.severity, rule.title, format!("{} [{}]", rule.cwe, rule.check))
-                    .with_evidence(format!("{}:{line}: {snippet}", path.display()));
+                let mut f = Finding::new(
+                    rule.check,
+                    rule.severity,
+                    rule.title,
+                    format!("{} [{}]", rule.cwe, rule.check),
+                )
+                .with_evidence(format!("{}:{line}: {snippet}", path.display()));
                 f.remediation = rule.remediation.to_string();
                 findings.push(f);
             }
@@ -281,7 +681,12 @@ mod tests {
 
     fn run(check: &str, lang: Lang, source: &str) -> Vec<Finding> {
         let rules = vec![rule(check)];
-        scan_file(&rules, lang, std::path::Path::new("fixture"), source.as_bytes())
+        scan_file(
+            &rules,
+            lang,
+            std::path::Path::new("fixture"),
+            source.as_bytes(),
+        )
     }
 
     #[test]
@@ -326,31 +731,51 @@ mod tests {
 
     #[test]
     fn command_exec_flags_js_child_process_exec() {
-        let findings = run("sast_command_exec", Lang::JavaScript, "child_process.exec(cmd);");
+        let findings = run(
+            "sast_command_exec",
+            Lang::JavaScript,
+            "child_process.exec(cmd);",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn command_exec_does_not_flag_js_array_spawn() {
-        let findings = run("sast_command_exec", Lang::JavaScript, "spawn('ls', ['-la']);");
+        let findings = run(
+            "sast_command_exec",
+            Lang::JavaScript,
+            "spawn('ls', ['-la']);",
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn command_exec_flags_rust_shell_spawn() {
-        let findings = run("sast_command_exec", Lang::Rust, r#"Command::new("sh").arg("-c").arg(user_input).output()"#);
+        let findings = run(
+            "sast_command_exec",
+            Lang::Rust,
+            r#"Command::new("sh").arg("-c").arg(user_input).output()"#,
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn command_exec_does_not_flag_rust_argv_spawn() {
-        let findings = run("sast_command_exec", Lang::Rust, r#"Command::new("ls").arg("-la").output()"#);
+        let findings = run(
+            "sast_command_exec",
+            Lang::Rust,
+            r#"Command::new("ls").arg("-la").output()"#,
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn deserialize_flags_python_pickle_loads() {
-        let findings = run("sast_unsafe_deserialize", Lang::Python, "pickle.loads(data)");
+        let findings = run(
+            "sast_unsafe_deserialize",
+            Lang::Python,
+            "pickle.loads(data)",
+        );
         assert_eq!(findings.len(), 1);
     }
 
@@ -362,49 +787,81 @@ mod tests {
 
     #[test]
     fn weak_crypto_flags_python_md5() {
-        let findings = run("sast_weak_crypto", Lang::Python, "hashlib.md5(password.encode())");
+        let findings = run(
+            "sast_weak_crypto",
+            Lang::Python,
+            "hashlib.md5(password.encode())",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn weak_crypto_does_not_flag_python_sha256() {
-        let findings = run("sast_weak_crypto", Lang::Python, "hashlib.sha256(password.encode())");
+        let findings = run(
+            "sast_weak_crypto",
+            Lang::Python,
+            "hashlib.sha256(password.encode())",
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn weak_crypto_flags_js_create_hash_md5() {
-        let findings = run("sast_weak_crypto", Lang::JavaScript, "crypto.createHash('md5').update(pw).digest('hex');");
+        let findings = run(
+            "sast_weak_crypto",
+            Lang::JavaScript,
+            "crypto.createHash('md5').update(pw).digest('hex');",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn weak_crypto_does_not_flag_js_create_hash_sha256() {
-        let findings = run("sast_weak_crypto", Lang::JavaScript, "crypto.createHash('sha256').update(pw).digest('hex');");
+        let findings = run(
+            "sast_weak_crypto",
+            Lang::JavaScript,
+            "crypto.createHash('sha256').update(pw).digest('hex');",
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn path_traversal_flags_python_open_concat() {
-        let findings = run("sast_path_traversal", Lang::Python, "open(base_dir + filename)");
+        let findings = run(
+            "sast_path_traversal",
+            Lang::Python,
+            "open(base_dir + filename)",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn path_traversal_does_not_flag_python_open_literal() {
-        let findings = run("sast_path_traversal", Lang::Python, "open(\"static/report.txt\")");
+        let findings = run(
+            "sast_path_traversal",
+            Lang::Python,
+            "open(\"static/report.txt\")",
+        );
         assert!(findings.is_empty());
     }
 
     #[test]
     fn path_traversal_flags_js_readfile_concat() {
-        let findings = run("sast_path_traversal", Lang::JavaScript, "fs.readFileSync(baseDir + '/' + name);");
+        let findings = run(
+            "sast_path_traversal",
+            Lang::JavaScript,
+            "fs.readFileSync(baseDir + '/' + name);",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn path_traversal_does_not_flag_js_readfile_literal() {
-        let findings = run("sast_path_traversal", Lang::JavaScript, "fs.readFileSync('./static/report.txt');");
+        let findings = run(
+            "sast_path_traversal",
+            Lang::JavaScript,
+            "fs.readFileSync('./static/report.txt');",
+        );
         assert!(findings.is_empty());
     }
 
@@ -417,7 +874,8 @@ mod tests {
 
     #[test]
     fn sqli_flags_ts_string_concat_query() {
-        let src = "const id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = \" + id, cb);";
+        let src =
+            "const id: string = getId();\ndb.query(\"SELECT * FROM users WHERE id = \" + id, cb);";
         let findings = run("sast_sqli_concat", Lang::TypeScript, src);
         assert_eq!(findings.len(), 1);
     }
@@ -445,7 +903,8 @@ mod tests {
 
     #[test]
     fn weak_crypto_flags_ts_create_hash_md5() {
-        let src = "const pw: string = getPassword();\ncrypto.createHash('md5').update(pw).digest('hex');";
+        let src =
+            "const pw: string = getPassword();\ncrypto.createHash('md5').update(pw).digest('hex');";
         let findings = run("sast_weak_crypto", Lang::TypeScript, src);
         assert_eq!(findings.len(), 1);
     }
@@ -473,13 +932,21 @@ mod tests {
 
     #[test]
     fn deserialize_flags_js_unserialize() {
-        let findings = run("sast_unsafe_deserialize", Lang::JavaScript, "unserialize(data);");
+        let findings = run(
+            "sast_unsafe_deserialize",
+            Lang::JavaScript,
+            "unserialize(data);",
+        );
         assert_eq!(findings.len(), 1);
     }
 
     #[test]
     fn deserialize_does_not_flag_js_json_parse() {
-        let findings = run("sast_unsafe_deserialize", Lang::JavaScript, "JSON.parse(data);");
+        let findings = run(
+            "sast_unsafe_deserialize",
+            Lang::JavaScript,
+            "JSON.parse(data);",
+        );
         assert!(findings.is_empty());
     }
 
@@ -515,7 +982,8 @@ mod tests {
 
     #[test]
     fn command_exec_flags_tsx_child_process_exec() {
-        let src = "const el = <div>{1}</div>;\nconst cmd: string = getCmd();\nchild_process.exec(cmd);";
+        let src =
+            "const el = <div>{1}</div>;\nconst cmd: string = getCmd();\nchild_process.exec(cmd);";
         let findings = run("sast_command_exec", Lang::Tsx, src);
         assert_eq!(findings.len(), 1);
     }
@@ -560,5 +1028,201 @@ mod tests {
         let src = "const el = <div>{1}</div>;\nunserialize(data);";
         let findings = run("sast_unsafe_deserialize", Lang::Tsx, src);
         assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ssrf_flags_python_requests_concat_url() {
+        let src = "requests.get(\"http://internal-svc/\" + user_host)";
+        let findings = run("sast_ssrf", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ssrf_does_not_flag_python_requests_literal_url() {
+        let src = "requests.get(\"https://api.example.com/v1/ping\")";
+        let findings = run("sast_ssrf", Lang::Python, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn ssrf_flags_js_fetch_template_literal() {
+        let src = "fetch(`/api/users/${username}`);";
+        let findings = run("sast_ssrf", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ssrf_does_not_flag_js_fetch_literal() {
+        let src = "fetch('/api/users');";
+        let findings = run("sast_ssrf", Lang::JavaScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn ssrf_flags_rust_reqwest_get_with_format_macro() {
+        let src = "reqwest::get(&format!(\"http://{host}/fetch\"))";
+        let findings = run("sast_ssrf", Lang::Rust, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ssrf_does_not_flag_rust_reqwest_get_literal() {
+        let src = "reqwest::get(\"https://api.example.com/ping\")";
+        let findings = run("sast_ssrf", Lang::Rust, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn open_redirect_flags_express_redirect_from_request() {
+        let src = "app.get('/go', (req, res) => { res.redirect(req.query.next); });";
+        let findings = run("sast_open_redirect", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn open_redirect_does_not_flag_literal_redirect() {
+        let src = "app.get('/old', (req, res) => { res.redirect('/home'); });";
+        let findings = run("sast_open_redirect", Lang::JavaScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn open_redirect_flags_python_redirect_of_request_args() {
+        let src = "return redirect(request.args.get('next'))";
+        let findings = run("sast_open_redirect", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn xss_sink_flags_innerhtml_template_assignment() {
+        let src = "el.innerHTML = `<b>${location.hash}</b>`;";
+        let findings = run("sast_xss_sink", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn xss_sink_flags_document_write_concat() {
+        let src = "document.write('<b>' + userInput + '</b>');";
+        let findings = run("sast_xss_sink", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn xss_sink_does_not_flag_textcontent_assignment() {
+        let src = "el.textContent = userInput;";
+        let findings = run("sast_xss_sink", Lang::JavaScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn tls_verify_flags_js_reject_unauthorized_false() {
+        let src = "const agent = new https.Agent({ rejectUnauthorized: false });";
+        let findings = run("sast_tls_verify_disabled", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn tls_verify_does_not_flag_reject_unauthorized_true() {
+        let src = "const agent = new https.Agent({ rejectUnauthorized: true });";
+        let findings = run("sast_tls_verify_disabled", Lang::JavaScript, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn tls_verify_flags_python_verify_false() {
+        let src = "requests.get(url, verify=False)";
+        let findings = run("sast_tls_verify_disabled", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn tls_verify_flags_rust_danger_accept_invalid_certs() {
+        let src = "ClientConfig::builder().danger_accept_invalid_certs(true)";
+        let findings = run("sast_tls_verify_disabled", Lang::Rust, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn tls_verify_does_not_flag_rust_certs_enabled_builder() {
+        let src = "ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()";
+        let findings = run("sast_tls_verify_disabled", Lang::Rust, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn xpath_flags_python_concat_findall() {
+        let src = "root.findall(\"//user[name='\" + name + \"']\")";
+        let findings = run("sast_xpath_injection", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn xpath_does_not_flag_python_literal_findall() {
+        let src = "root.findall(\"//user[name='alice']\")";
+        let findings = run("sast_xpath_injection", Lang::Python, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn xpath_flags_js_evaluate_concat() {
+        let src = "doc.evaluate(\"//user[name='\" + name + \"']\", doc, null, 0, null);";
+        let findings = run("sast_xpath_injection", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ldap_flags_python_search_filter_concat() {
+        let src = "conn.search(search_base=\"dc=x\", search_filter=\"(cn=\" + user + \")\")";
+        let findings = run("sast_ldap_injection", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn ldap_does_not_flag_python_literal_filter() {
+        let src = "conn.search(search_base=\"dc=x\", search_filter=\"(cn=alice)\")";
+        let findings = run("sast_ldap_injection", Lang::Python, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn ldap_flags_js_search_concat() {
+        let src = "client.search(\"(cn=\" + user + \")\", cb);";
+        let findings = run("sast_ldap_injection", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn weak_random_flags_python_token_from_random() {
+        let src = "import random\nsession_token = random.randint(100000, 999999)";
+        let findings = run("sast_weak_random", Lang::Python, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn weak_random_does_not_flag_python_unrelated_variable() {
+        let src = "import random\ndice_roll = random.randint(1, 6)";
+        let findings = run("sast_weak_random", Lang::Python, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn weak_random_does_not_flag_python_secrets_module() {
+        let src = "import secrets\nsession_token = secrets.token_hex(32)";
+        let findings = run("sast_weak_random", Lang::Python, src);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn weak_random_flags_js_math_random_token() {
+        let src = "const csrfToken = Math.random().toString(36);";
+        let findings = run("sast_weak_random", Lang::JavaScript, src);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn weak_random_does_not_flag_js_unrelated_variable() {
+        let src = "const animationOffset = Math.random() * 100;";
+        let findings = run("sast_weak_random", Lang::JavaScript, src);
+        assert!(findings.is_empty());
     }
 }

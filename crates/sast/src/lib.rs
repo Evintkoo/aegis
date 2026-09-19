@@ -15,8 +15,8 @@ use lang::Lang;
 use pentest_core::Finding;
 use std::path::{Path, PathBuf};
 
-/// Walks `root`, runs all 6 rules, and returns every finding. Files with
-/// an unrecognized extension are skipped by the 5 tree-sitter rules but
+/// Walks `root`, runs all 11 rules, and returns every finding. Files with
+/// an unrecognized extension are skipped by the 10 tree-sitter rules but
 /// still scanned by the hardcoded-secret regex rule (CWE-798 commonly
 /// shows up in config/env files with no grammar at all).
 ///
@@ -35,7 +35,9 @@ pub fn scan(root: &Path, exclude: &[PathBuf]) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     for path in walker::walk(root, exclude) {
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
 
         if let Some(lang) = Lang::from_path(&path) {
             findings.extend(query_rules::scan_file(&rules, lang, &path, &bytes));
@@ -61,7 +63,10 @@ mod tests {
     use std::fs;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pentest-sast-lib-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pentest-sast-lib-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -70,9 +75,17 @@ mod tests {
     #[test]
     fn scan_finds_issues_across_multiple_languages_and_files() {
         let root = temp_dir("multi-lang");
-        fs::write(root.join("app.py"), "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n").unwrap();
+        fs::write(
+            root.join("app.py"),
+            "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n",
+        )
+        .unwrap();
         fs::write(root.join("app.js"), "child_process.exec(cmd);\n").unwrap();
-        fs::write(root.join(".env"), "api_key = \"sk_live_abcdefgh12345678\"\n").unwrap();
+        fs::write(
+            root.join(".env"),
+            "api_key = \"sk_live_abcdefgh12345678\"\n",
+        )
+        .unwrap();
 
         let findings = scan(&root, &[]);
 
@@ -84,12 +97,19 @@ mod tests {
     #[test]
     fn scan_of_clean_tree_produces_no_findings() {
         let root = temp_dir("clean");
-        fs::write(root.join("app.py"), "cur.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))\n").unwrap();
+        fs::write(
+            root.join("app.py"),
+            "cur.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))\n",
+        )
+        .unwrap();
         fs::write(root.join("app.js"), "spawn('ls', ['-la']);\n").unwrap();
 
         let findings = scan(&root, &[]);
 
-        assert!(findings.is_empty(), "expected no findings, got {findings:?}");
+        assert!(
+            findings.is_empty(),
+            "expected no findings, got {findings:?}"
+        );
     }
 
     #[test]
@@ -118,7 +138,10 @@ mod tests {
         let excluded = fs::canonicalize(&sub).unwrap();
         let findings = scan(&root, &[excluded]);
 
-        assert!(findings.iter().any(|f| f.check == "sast_command_exec"), "root-level file's finding must still be present");
+        assert!(
+            findings.iter().any(|f| f.check == "sast_command_exec"),
+            "root-level file's finding must still be present"
+        );
         assert!(
             !findings.iter().any(|f| f.evidence.contains("evil.js")),
             "excluded subdirectory's finding must NOT be present, got {findings:?}"
@@ -138,6 +161,9 @@ mod tests {
 
         let findings = scan(&root, &[]);
 
-        assert!(findings.iter().any(|f| f.check == "sast_hardcoded_secret"), "expected the secret to still be detected, got {findings:?}");
+        assert!(
+            findings.iter().any(|f| f.check == "sast_hardcoded_secret"),
+            "expected the secret to still be detected, got {findings:?}"
+        );
     }
 }

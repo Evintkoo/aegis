@@ -15,14 +15,37 @@ use std::time::Duration;
 pub const NAME: &str = "ssrf";
 
 const FETCH_PARAMS: &[&str] = &[
-    "url", "uri", "link", "src", "source", "dest", "destination", "redirect", "redirect_uri", "target", "path",
-    "continue", "feed", "host", "site", "domain", "callback", "webhook", "image", "img", "load",
+    "url",
+    "uri",
+    "link",
+    "src",
+    "source",
+    "dest",
+    "destination",
+    "redirect",
+    "redirect_uri",
+    "target",
+    "path",
+    "continue",
+    "feed",
+    "host",
+    "site",
+    "domain",
+    "callback",
+    "webhook",
+    "image",
+    "img",
+    "load",
 ];
 
 // Tokens that appear only in FETCHED content, never in the request URL
 // itself (so reflecting the payload back does NOT trigger a false positive).
-static METADATA_MARKERS: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?i)(ami-id|instance-id|iam/security-credentials|instance-identity|root:.*:0:0:)").unwrap());
+static METADATA_MARKERS: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)(ami-id|instance-id|iam/security-credentials|instance-identity|root:.*:0:0:)",
+    )
+    .unwrap()
+});
 
 fn payloads(callback: &Option<String>) -> Vec<String> {
     let mut p = vec![
@@ -40,7 +63,11 @@ fn payloads(callback: &Option<String>) -> Vec<String> {
 }
 
 async fn send(client: &HttpClient, method: &str, param: &str, val: &str) -> Option<HttpResponse> {
-    let req = if method == "GET" { HttpRequest::get().param(param, val) } else { HttpRequest::post().form_field(param, val) };
+    let req = if method == "GET" {
+        HttpRequest::get().param(param, val)
+    } else {
+        HttpRequest::post().form_field(param, val)
+    };
     client.request(req).await.ok()
 }
 
@@ -56,28 +83,39 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
     if let Some(p) = &opts.param {
         params.push(p.as_str());
     }
-    params.extend(FETCH_PARAMS.iter().filter(|p| Some(**p) != opts.param.as_deref()));
+    params.extend(
+        FETCH_PARAMS
+            .iter()
+            .filter(|p| Some(**p) != opts.param.as_deref()),
+    );
 
     let mut out = Vec::new();
+    let mut oob_params: Vec<String> = Vec::new();
     for &param in params.iter().take(6) {
-        let Some(baseline) = send(client, &method, param, "http://example.com/").await else { continue };
+        let Some(baseline) = send(client, &method, param, "http://example.com/").await else {
+            continue;
+        };
         for pl in payloads(&callback) {
-            let Some(r) = send(client, &method, param, &pl).await else { continue };
+            let Some(r) = send(client, &method, param, &pl).await else {
+                continue;
+            };
             if let Some(m) = METADATA_MARKERS.find(&r.body) {
                 if !pl.contains(m.as_str()) {
                     out.push(
-                        Finding::new(NAME, Severity::Critical, "SSRF — internal content reflected", format!("param '{param}' fetched {pl}"))
-                            .with_evidence(m.as_str().to_string()),
+                        Finding::new(
+                            NAME,
+                            Severity::Critical,
+                            "SSRF — internal content reflected",
+                            format!("param '{param}' fetched {pl}"),
+                        )
+                        .with_evidence(m.as_str().to_string()),
                     );
                     return out;
                 }
             }
             if let Some(cb) = &callback {
                 if &pl == cb {
-                    out.push(
-                        Finding::new(NAME, Severity::High, "Possible SSRF — check your OOB listener", format!("param '{param}' sent to your callback {cb}"))
-                            .with_evidence("confirm the hit landed on your listener"),
-                    );
+                    oob_params.push(param.to_string());
                 }
             }
         }
@@ -85,12 +123,40 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         // the server. Length diffs are unreliable (apps echo the URL), so
         // we ignore them.
         if let Some(r_int) = send(client, &method, param, "http://127.0.0.1:1/").await {
-            if r_int.elapsed > baseline.elapsed + Duration::from_secs(3) && !r_int.body.contains("127.0.0.1:1") {
+            if r_int.elapsed > baseline.elapsed + Duration::from_secs(3)
+                && !r_int.body.contains("127.0.0.1:1")
+            {
                 out.push(
-                    Finding::new(NAME, Severity::Medium, "Param may drive server-side fetch (SSRF surface)", format!("param '{param}' stalled on an internal address; verify manually"))
-                        .with_evidence(format!("int={:.1}s vs ext={:.1}s", r_int.elapsed.as_secs_f64(), baseline.elapsed.as_secs_f64())),
+                    Finding::new(
+                        NAME,
+                        Severity::Medium,
+                        "Param may drive server-side fetch (SSRF surface)",
+                        format!("param '{param}' stalled on an internal address; verify manually"),
+                    )
+                    .with_evidence(format!(
+                        "int={:.1}s vs ext={:.1}s",
+                        r_int.elapsed.as_secs_f64(),
+                        baseline.elapsed.as_secs_f64()
+                    )),
                 );
             }
+        }
+    }
+    if !oob_params.is_empty() {
+        if let Some(cb) = &callback {
+            out.push(
+                Finding::new(
+                    NAME,
+                    Severity::Info,
+                    "Possible SSRF — check your OOB listener",
+                    format!(
+                        "sent your callback payload for {} param(s) {}; pending OOB confirmation",
+                        oob_params.len(),
+                        oob_params.join(", ")
+                    ),
+                )
+                .with_evidence(format!("callback={cb}; params={oob_params:?}")),
+            );
         }
     }
     out
@@ -103,7 +169,13 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
@@ -118,11 +190,16 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("url".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("url".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "SSRF — internal content reflected"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "SSRF — internal content reflected"));
     }
 
     #[tokio::test]
@@ -133,7 +210,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("url".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("url".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -144,10 +224,37 @@ mod tests {
     async fn reports_possible_ssrf_when_callback_payload_is_sent() {
         let base = scripted_server(|_req, _| ScriptedResponse::ok("ok")).await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("url".to_string()), ssrf_callback: Some("http://collab.test/tok1".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("url".to_string()),
+            ssrf_callback: Some("http://collab.test/tok1".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "Possible SSRF — check your OOB listener"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Possible SSRF — check your OOB listener"));
+    }
+
+    #[tokio::test]
+    async fn emits_a_single_oob_finding_across_multiple_params() {
+        let base = scripted_server(|_req, _| ScriptedResponse::ok("ok")).await;
+        let client = fast_client(base);
+        let opts = Opts {
+            ssrf_callback: Some("http://collab.test/tok1".to_string()),
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        let oob: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.title == "Possible SSRF — check your OOB listener")
+            .collect();
+        assert_eq!(oob.len(), 1);
+        assert_eq!(oob[0].severity, Severity::Info);
+        assert!(oob[0].detail.contains("6 param(s)"));
+        assert!(oob[0].evidence.contains("callback=http://collab.test/tok1"));
     }
 }

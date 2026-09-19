@@ -22,8 +22,17 @@ const BOOL_PAIRS: &[(&str, &str)] = &[
 ];
 const ERROR_PAYLOADS: &[&str] = &["'", "\"", "']", "\"]", "' or name()='"];
 
-async fn send(client: &HttpClient, method: &str, param: &str, val: &str) -> Option<pentest_core::HttpResponse> {
-    let req = if method == "POST" { HttpRequest::post().form_field(param, val) } else { HttpRequest::get().param(param, val) };
+async fn send(
+    client: &HttpClient,
+    method: &str,
+    param: &str,
+    val: &str,
+) -> Option<pentest_core::HttpResponse> {
+    let req = if method == "POST" {
+        HttpRequest::post().form_field(param, val)
+    } else {
+        HttpRequest::get().param(param, val)
+    };
     client.request(req).await.ok()
 }
 
@@ -37,7 +46,11 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         return out;
     };
     let method = opts.method.to_uppercase();
-    let base = if opts.base_value.is_empty() { "test" } else { &opts.base_value };
+    let base = if opts.base_value.is_empty() {
+        "test"
+    } else {
+        &opts.base_value
+    };
 
     let Some(baseline) = send(client, &method, param, base).await else {
         return out;
@@ -45,24 +58,43 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
 
     for p in ERROR_PAYLOADS {
         let val = format!("{base}{p}");
-        let Some(r) = send(client, &method, param, &val).await else { continue };
+        let Some(r) = send(client, &method, param, &val).await else {
+            continue;
+        };
         if let Some(m) = ERROR_MARKERS.find(&r.body) {
             if ERROR_MARKERS.find(&baseline.body).is_none() {
-                out.push(Finding::new(NAME, Severity::High, "XPath injection (error-based)", format!("payload {p:?} triggered an XPath error")).with_evidence(m.as_str()));
+                out.push(
+                    Finding::new(
+                        NAME,
+                        Severity::High,
+                        "XPath injection (error-based)",
+                        format!("payload {p:?} triggered an XPath error"),
+                    )
+                    .with_evidence(m.as_str()),
+                );
                 return out;
             }
         }
     }
 
     for (true_p, false_p) in BOOL_PAIRS {
-        let Some(t) = send(client, &method, param, &format!("{base}{true_p}")).await else { continue };
-        let Some(f) = send(client, &method, param, &format!("{base}{false_p}")).await else { continue };
+        let Some(t) = send(client, &method, param, &format!("{base}{true_p}")).await else {
+            continue;
+        };
+        let Some(f) = send(client, &method, param, &format!("{base}{false_p}")).await else {
+            continue;
+        };
         let sim_t_base = similarity(&t.body, &baseline.body);
         let sim_t_f = similarity(&t.body, &f.body);
         if sim_t_base > 0.9 && sim_t_f < 0.85 {
             out.push(
-                Finding::new(NAME, Severity::High, "XPath injection (boolean-based)", format!("{true_p:?} matched baseline, {false_p:?} diverged"))
-                    .with_evidence(format!("T/F sim={sim_t_f:.2}")),
+                Finding::new(
+                    NAME,
+                    Severity::High,
+                    "XPath injection (boolean-based)",
+                    format!("{true_p:?} matched baseline, {false_p:?} diverged"),
+                )
+                .with_evidence(format!("T/F sim={sim_t_f:.2}")),
             );
             return out;
         }
@@ -77,7 +109,10 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         HttpClient::new(base_url, config)
     }
 
@@ -93,7 +128,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("user".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("user".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -117,7 +155,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("user".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("user".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -129,7 +170,10 @@ mod tests {
     async fn no_findings_against_a_clean_target() {
         let base = scripted_server(|_req, _| ScriptedResponse::ok("login form")).await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("user".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("user".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 

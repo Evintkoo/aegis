@@ -109,12 +109,20 @@ pub fn local_record(finding: &Finding, id_str: &str) -> CveRecord {
         },
         containers: Containers {
             cna: CnaContainer {
-                provider_metadata: ProviderMetadata { org_id: LOCAL_ASSIGNER_ORG_ID.to_string() },
-                descriptions: vec![Description { lang: "en".to_string(), value: finding.title.clone() }],
+                provider_metadata: ProviderMetadata {
+                    org_id: LOCAL_ASSIGNER_ORG_ID.to_string(),
+                },
+                descriptions: vec![Description {
+                    lang: "en".to_string(),
+                    value: finding.title.clone(),
+                }],
                 affected: vec![AffectedProduct {
                     vendor: "unknown".to_string(),
                     product: "target".to_string(),
-                    versions: vec![AffectedVersion { version: "*".to_string(), status: "affected".to_string() }],
+                    versions: vec![AffectedVersion {
+                        version: "*".to_string(),
+                        status: "affected".to_string(),
+                    }],
                 }],
                 references: vec![],
                 problem_types: None,
@@ -147,7 +155,10 @@ mod tests {
         let record = local_record(&f, "PENTEST-LOCAL-2026-000001");
         let json: serde_json::Value = serde_json::to_value(&record).unwrap();
         let cna = &json["containers"]["cna"];
-        assert!(cna.get("x_pentest").is_some(), "expected literal x_pentest key, got: {cna}");
+        assert!(
+            cna.get("x_pentest").is_some(),
+            "expected literal x_pentest key, got: {cna}"
+        );
         assert!(cna.get("xPentest").is_none());
         assert_eq!(cna["x_pentest"]["check"], "sqli");
     }
@@ -156,6 +167,11 @@ mod tests {
     fn descriptions_include_at_least_one_english_entry() {
         let f = Finding::new("xss", Severity::High, "Reflected XSS", "detail");
         let record = local_record(&f, "PENTEST-LOCAL-2026-000002");
-        assert!(record.containers.cna.descriptions.iter().any(|d| d.lang == "en"));
+        assert!(record
+            .containers
+            .cna
+            .descriptions
+            .iter()
+            .any(|d| d.lang == "en"));
     }
 }

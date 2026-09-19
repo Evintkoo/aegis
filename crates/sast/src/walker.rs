@@ -8,7 +8,19 @@ use std::path::{Path, PathBuf};
 
 /// Directory names never descended into. Covers the noise this toolkit's
 /// own supported stacks (Rust, TS/JS, Python) produce.
-const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".mypy_cache", ".pytest_cache"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".mypy_cache",
+    ".pytest_cache",
+];
 
 /// Collects every regular file under `root`, recursively, skipping
 /// `SKIP_DIRS` by name at any depth, plus anything whose canonicalized
@@ -35,18 +47,24 @@ fn is_excluded(path: &Path, exclude: &[PathBuf]) -> bool {
     if exclude.is_empty() {
         return false;
     }
-    let Ok(canon) = fs::canonicalize(path) else { return false };
+    let Ok(canon) = fs::canonicalize(path) else {
+        return false;
+    };
     exclude.iter().any(|ex| canon.starts_with(ex))
 }
 
 fn walk_into(dir: &Path, exclude: &[PathBuf], out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if is_excluded(&path, exclude) {
             continue;
         }
-        let Ok(file_type) = entry.file_type() else { continue };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         if file_type.is_dir() {
             let name = entry.file_name();
             if SKIP_DIRS.iter().any(|skip| name == *skip) {
@@ -66,7 +84,10 @@ mod tests {
     fn temp_dir() -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("pentest-sast-walker-test-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "pentest-sast-walker-test-{}-{n}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -80,7 +101,10 @@ mod tests {
 
         let files = walk(&root, &[]);
 
-        assert_eq!(files, vec![root.join("b.py"), root.join("sub").join("a.rs")]);
+        assert_eq!(
+            files,
+            vec![root.join("b.py"), root.join("sub").join("a.rs")]
+        );
     }
 
     #[test]

@@ -23,13 +23,29 @@ pub const NAME: &str = "external";
 
 const TIMEOUT: Duration = Duration::from_secs(240); // seconds per tool
 
-static SQLMAP_VULN_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)is vulnerable|sqlmap identified the following injection").unwrap());
-static SQLMAP_PARAM_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"Parameter:\s*(\S+)").unwrap());
+static SQLMAP_VULN_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)is vulnerable|sqlmap identified the following injection").unwrap()
+});
+static SQLMAP_PARAM_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"Parameter:\s*(\S+)").unwrap());
 
-const NIKTO_MARKERS: &[&str] = &["osvdb", "outdated", "header", "vulnerab", "disclosure", "default", "cgi", "trace", "put", "index of"];
+const NIKTO_MARKERS: &[&str] = &[
+    "osvdb",
+    "outdated",
+    "header",
+    "vulnerab",
+    "disclosure",
+    "default",
+    "cgi",
+    "trace",
+    "put",
+    "index of",
+];
 
 fn is_on_path(tool: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else { return false };
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
     std::env::split_paths(&path).any(|dir| dir.join(tool).is_file())
 }
 
@@ -39,13 +55,21 @@ fn is_on_path(tool: &str) -> bool {
 /// timeout` drops the still-pending `wait_with_output` future.
 async fn run_capturing_output(cmd: &str, args: &[&str], timeout: Duration) -> String {
     let mut command = tokio::process::Command::new(cmd);
-    command.args(args).kill_on_drop(true).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .args(args)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let child = match command.spawn() {
         Ok(c) => c,
         Err(e) => return format!("[external] error: {e}"),
     };
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)),
+        Ok(Ok(output)) => format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
         Ok(Err(e)) => format!("[external] error: {e}"),
         Err(_) => "[external] TIMEOUT".to_string(),
     }
@@ -54,9 +78,24 @@ async fn run_capturing_output(cmd: &str, args: &[&str], timeout: Duration) -> St
 fn parse_sqlmap(output: &str) -> Vec<Finding> {
     let mut out = Vec::new();
     if SQLMAP_VULN_RE.is_match(output) {
-        let params: Vec<&str> = SQLMAP_PARAM_RE.captures_iter(output).filter_map(|c| c.get(1).map(|m| m.as_str())).collect();
-        let params_str = if params.is_empty() { "see output".to_string() } else { params.join(", ") };
-        out.push(Finding::new(NAME, Severity::Critical, "sqlmap confirmed SQL injection", format!("vulnerable parameter(s): {params_str}")).with_evidence("sqlmap"));
+        let params: Vec<&str> = SQLMAP_PARAM_RE
+            .captures_iter(output)
+            .filter_map(|c| c.get(1).map(|m| m.as_str()))
+            .collect();
+        let params_str = if params.is_empty() {
+            "see output".to_string()
+        } else {
+            params.join(", ")
+        };
+        out.push(
+            Finding::new(
+                NAME,
+                Severity::Critical,
+                "sqlmap confirmed SQL injection",
+                format!("vulnerable parameter(s): {params_str}"),
+            )
+            .with_evidence("sqlmap"),
+        );
     }
     out
 }
@@ -65,10 +104,20 @@ fn parse_nikto(output: &str) -> Vec<Finding> {
     let mut out = Vec::new();
     for line in output.lines() {
         let line = line.trim();
-        let Some(rest) = line.strip_prefix("+ ") else { continue };
+        let Some(rest) = line.strip_prefix("+ ") else {
+            continue;
+        };
         let lower = rest.to_lowercase();
         if NIKTO_MARKERS.iter().any(|m| lower.contains(m)) {
-            out.push(Finding::new(NAME, Severity::Medium, "nikto finding", rest.chars().take(198).collect::<String>()).with_evidence("nikto"));
+            out.push(
+                Finding::new(
+                    NAME,
+                    Severity::Medium,
+                    "nikto finding",
+                    rest.chars().take(198).collect::<String>(),
+                )
+                .with_evidence("nikto"),
+            );
         }
     }
     out.truncate(25);
@@ -82,9 +131,17 @@ fn parse_nuclei(output: &str, target_url: &str) -> Vec<Finding> {
         if !line.starts_with('{') {
             continue;
         }
-        let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         let info = d.get("info").cloned().unwrap_or(serde_json::Value::Null);
-        let sev = match info.get("severity").and_then(|v| v.as_str()).unwrap_or("info").to_lowercase().as_str() {
+        let sev = match info
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .unwrap_or("info")
+            .to_lowercase()
+            .as_str()
+        {
             "critical" => Severity::Critical,
             "high" => Severity::High,
             "medium" => Severity::Medium,
@@ -95,10 +152,27 @@ fn parse_nuclei(output: &str, target_url: &str) -> Vec<Finding> {
             .get("name")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| d.get("template-id").and_then(|v| v.as_str()).unwrap_or("nuclei").to_string());
-        let matched_at = d.get("matched-at").and_then(|v| v.as_str()).or_else(|| d.get("host").and_then(|v| v.as_str())).unwrap_or(target_url).to_string();
-        let template_id = d.get("template-id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        out.push(Finding::new(NAME, sev, format!("nuclei: {name}"), matched_at).with_evidence(template_id));
+            .unwrap_or_else(|| {
+                d.get("template-id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("nuclei")
+                    .to_string()
+            });
+        let matched_at = d
+            .get("matched-at")
+            .and_then(|v| v.as_str())
+            .or_else(|| d.get("host").and_then(|v| v.as_str()))
+            .unwrap_or(target_url)
+            .to_string();
+        let template_id = d
+            .get("template-id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        out.push(
+            Finding::new(NAME, sev, format!("nuclei: {name}"), matched_at)
+                .with_evidence(template_id),
+        );
     }
     out.truncate(40);
     out
@@ -122,33 +196,97 @@ async fn run_impl(client: &HttpClient, opts: &Opts, which: impl Fn(&str) -> bool
 
     if which("sqlmap") {
         found_any = true;
-        println!("    [external] running sqlmap (up to {}s)…", TIMEOUT.as_secs());
-        let output = run_capturing_output("sqlmap", &["-u", &url, "--batch", "--level", "1", "--risk", "1", "--timeout", "15", "--disable-coloring", "--flush-session"], TIMEOUT).await;
+        println!(
+            "    [external] running sqlmap (up to {}s)…",
+            TIMEOUT.as_secs()
+        );
+        let output = run_capturing_output(
+            "sqlmap",
+            &[
+                "-u",
+                &url,
+                "--batch",
+                "--level",
+                "1",
+                "--risk",
+                "1",
+                "--timeout",
+                "15",
+                "--disable-coloring",
+                "--flush-session",
+            ],
+            TIMEOUT,
+        )
+        .await;
         out.extend(parse_sqlmap(&output));
     } else {
-        out.push(Finding::new(NAME, Severity::Info, "sqlmap not installed", "install sqlmap to include it in the scan"));
+        out.push(Finding::new(
+            NAME,
+            Severity::Info,
+            "sqlmap not installed",
+            "install sqlmap to include it in the scan",
+        ));
     }
 
     if which("nikto") {
         found_any = true;
-        println!("    [external] running nikto (up to {}s)…", TIMEOUT.as_secs());
-        let output = run_capturing_output("nikto", &["-h", &url, "-maxtime", "120s", "-nointeractive", "-ask", "no"], TIMEOUT).await;
+        println!(
+            "    [external] running nikto (up to {}s)…",
+            TIMEOUT.as_secs()
+        );
+        let output = run_capturing_output(
+            "nikto",
+            &[
+                "-h",
+                &url,
+                "-maxtime",
+                "120s",
+                "-nointeractive",
+                "-ask",
+                "no",
+            ],
+            TIMEOUT,
+        )
+        .await;
         out.extend(parse_nikto(&output));
     } else {
-        out.push(Finding::new(NAME, Severity::Info, "nikto not installed", "install nikto to include it in the scan"));
+        out.push(Finding::new(
+            NAME,
+            Severity::Info,
+            "nikto not installed",
+            "install nikto to include it in the scan",
+        ));
     }
 
     if which("nuclei") {
         found_any = true;
-        println!("    [external] running nuclei (up to {}s)…", TIMEOUT.as_secs());
-        let output = run_capturing_output("nuclei", &["-u", &url, "-silent", "-jsonl", "-timeout", "10"], TIMEOUT).await;
+        println!(
+            "    [external] running nuclei (up to {}s)…",
+            TIMEOUT.as_secs()
+        );
+        let output = run_capturing_output(
+            "nuclei",
+            &["-u", &url, "-silent", "-jsonl", "-timeout", "10"],
+            TIMEOUT,
+        )
+        .await;
         out.extend(parse_nuclei(&output, &url));
     } else {
-        out.push(Finding::new(NAME, Severity::Info, "nuclei not installed", "install nuclei to include it in the scan"));
+        out.push(Finding::new(
+            NAME,
+            Severity::Info,
+            "nuclei not installed",
+            "install nuclei to include it in the scan",
+        ));
     }
 
     if !found_any {
-        out.push(Finding::new(NAME, Severity::Info, "No external tools found", "install sqlmap / nikto / nuclei on PATH to enable this check"));
+        out.push(Finding::new(
+            NAME,
+            Severity::Info,
+            "No external tools found",
+            "install sqlmap / nikto / nuclei on PATH to enable this check",
+        ));
     }
     out
 }
@@ -179,14 +317,20 @@ mod tests {
         let start = std::time::Instant::now();
         let out = run_capturing_output("sleep", &["30"], Duration::from_millis(150)).await;
         assert_eq!(out, "[external] TIMEOUT");
-        assert!(start.elapsed() < Duration::from_secs(5), "did not bound the call: took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "did not bound the call: took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
     fn parse_sqlmap_detects_a_confirmed_injection() {
         let sample = "some banner\nsqlmap identified the following injection point(s)\nParameter: id (GET)\n";
         let findings = parse_sqlmap(sample);
-        assert!(findings.iter().any(|f| f.title == "sqlmap confirmed SQL injection" && f.detail.contains("id")));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "sqlmap confirmed SQL injection" && f.detail.contains("id")));
     }
 
     #[test]
@@ -226,14 +370,19 @@ mod tests {
     #[tokio::test]
     async fn reports_all_tools_missing_when_none_are_on_path() {
         let client = HttpClient::new("http://127.0.0.1:1", HttpClientConfig::default());
-        let opts = Opts { external: true, ..Opts::default() };
+        let opts = Opts {
+            external: true,
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts, |_tool| false).await;
 
         assert!(findings.iter().any(|f| f.title == "sqlmap not installed"));
         assert!(findings.iter().any(|f| f.title == "nikto not installed"));
         assert!(findings.iter().any(|f| f.title == "nuclei not installed"));
-        assert!(findings.iter().any(|f| f.title == "No external tools found"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "No external tools found"));
     }
 
     // Deliberately no test claims a real tool name (sqlmap/nikto/nuclei) is

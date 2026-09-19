@@ -26,6 +26,11 @@ pub struct Finding {
     pub poc: String,
     #[serde(default)]
     pub remediation: String,
+    /// Standards references for this weakness class — WSTG-v42 test IDs,
+    /// CWE, CAPEC — from `standards::refs_for`. Stamped centrally by the
+    /// orchestrator; machine-readable so reports/CI can group by standard.
+    #[serde(default)]
+    pub refs: Vec<String>,
 }
 
 impl Finding {
@@ -49,7 +54,17 @@ impl Finding {
             proof: String::new(),
             poc: String::new(),
             remediation: String::new(),
+            refs: Vec::new(),
         }
+    }
+
+    /// Attaches the standards refs for this finding's check (idempotent).
+    pub fn with_standard_refs(mut self) -> Self {
+        self.refs = crate::standards::refs_for(&self.check)
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        self
     }
 
     pub fn with_evidence(mut self, evidence: impl Into<String>) -> Self {
@@ -62,13 +77,19 @@ impl Finding {
             Some(c) => format!(" ({})", c.as_str()),
             None => String::new(),
         };
+        let refs = if self.refs.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", self.refs.join(" · "))
+        };
         format!(
-            "[{:<8}] {}{}: {} — {}",
+            "[{:<8}] {}{}: {} — {}{}",
             self.severity.label_upper(),
             self.check,
             conf,
             self.title,
-            self.detail
+            self.detail,
+            refs
         )
     }
 }
@@ -79,8 +100,13 @@ mod tests {
 
     #[test]
     fn line_matches_expected_format() {
-        let f = Finding::new("sqli", Severity::Critical, "Error-based SQL injection", "payload surfaced a DB error")
-            .with_evidence("SQL syntax error near ...");
+        let f = Finding::new(
+            "sqli",
+            Severity::Critical,
+            "Error-based SQL injection",
+            "payload surfaced a DB error",
+        )
+        .with_evidence("SQL syntax error near ...");
         assert_eq!(
             f.line(),
             "[CRITICAL] sqli: Error-based SQL injection — payload surfaced a DB error"
@@ -89,7 +115,12 @@ mod tests {
 
     #[test]
     fn line_includes_confidence_when_set() {
-        let mut f = Finding::new("xss", Severity::High, "Reflected XSS", "payload reflected unescaped");
+        let mut f = Finding::new(
+            "xss",
+            Severity::High,
+            "Reflected XSS",
+            "payload reflected unescaped",
+        );
         f.confidence = Some(Confidence::Confirmed);
         assert_eq!(
             f.line(),

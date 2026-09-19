@@ -24,15 +24,32 @@ pub fn run<'a>(client: &'a HttpClient, opts: &'a Opts) -> CheckFuture<'a> {
 
 async fn run_impl(client: &HttpClient, _opts: &Opts) -> Vec<Finding> {
     let mut out = Vec::new();
-    let Ok(r) = client.request(HttpRequest::get()).await else { return out };
+    let Ok(r) = client.request(HttpRequest::get()).await else {
+        return out;
+    };
 
-    let ctype = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Content-Type")).map(|(_, v)| v.as_str()).unwrap_or("");
+    let ctype = r
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Content-Type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
     if !ctype.to_lowercase().contains("html") {
         return out; // only HTML pages are frameable in a meaningful way
     }
 
-    let xfo = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("X-Frame-Options")).map(|(_, v)| v.to_uppercase()).unwrap_or_default();
-    let csp = r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Content-Security-Policy")).map(|(_, v)| v.clone()).unwrap_or_default();
+    let xfo = r
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("X-Frame-Options"))
+        .map(|(_, v)| v.to_uppercase())
+        .unwrap_or_default();
+    let csp = r
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Content-Security-Policy"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
     let fa_protected = csp.to_lowercase().contains("frame-ancestors");
     let xfo_protected = xfo == "DENY" || xfo == "SAMEORIGIN";
 
@@ -57,22 +74,38 @@ mod tests {
     use pentest_core::HttpClientConfig;
 
     fn fast_client(base_url: String) -> HttpClient {
-        HttpClient::new(base_url, HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() })
+        HttpClient::new(
+            base_url,
+            HttpClientConfig {
+                delay: std::time::Duration::from_millis(0),
+                ..HttpClientConfig::default()
+            },
+        )
     }
 
     #[tokio::test]
     async fn detects_a_framable_html_page() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("<html></html>").header("Content-Type", "text/html")).await;
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("<html></html>").header("Content-Type", "text/html")
+        })
+        .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;
 
-        assert!(findings.iter().any(|f| f.title == "Page is framable (clickjacking)"));
+        assert!(findings
+            .iter()
+            .any(|f| f.title == "Page is framable (clickjacking)"));
     }
 
     #[tokio::test]
     async fn no_finding_when_xfo_deny_is_set() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("<html></html>").header("Content-Type", "text/html").header("X-Frame-Options", "DENY")).await;
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("<html></html>")
+                .header("Content-Type", "text/html")
+                .header("X-Frame-Options", "DENY")
+        })
+        .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;
@@ -83,7 +116,9 @@ mod tests {
     #[tokio::test]
     async fn no_finding_when_csp_frame_ancestors_is_set() {
         let base = scripted_server(|_req, _| {
-            ScriptedResponse::ok("<html></html>").header("Content-Type", "text/html").header("Content-Security-Policy", "frame-ancestors 'self'")
+            ScriptedResponse::ok("<html></html>")
+                .header("Content-Type", "text/html")
+                .header("Content-Security-Policy", "frame-ancestors 'self'")
         })
         .await;
         let client = fast_client(base);
@@ -95,7 +130,10 @@ mod tests {
 
     #[tokio::test]
     async fn ignores_non_html_responses() {
-        let base = scripted_server(|_req, _| ScriptedResponse::ok("{}").header("Content-Type", "application/json")).await;
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("{}").header("Content-Type", "application/json")
+        })
+        .await;
         let client = fast_client(base);
 
         let findings = run_impl(&client, &Opts::default()).await;

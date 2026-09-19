@@ -18,11 +18,24 @@ static ERROR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 });
 
 const ERROR_PAYLOADS: &[&str] = &["'", "\"", "')", "';", "' OR '1"];
-const BOOL_PAIRS: &[(&str, &str)] = &[("' OR '1'='1", "' OR '1'='2"), (" OR 1=1-- -", " OR 1=2-- -")];
+const BOOL_PAIRS: &[(&str, &str)] = &[
+    ("' OR '1'='1", "' OR '1'='2"),
+    (" OR 1=1-- -", " OR 1=2-- -"),
+];
 
-async fn send(client: &HttpClient, method: &str, param: &str, base: &str, payload: &str) -> Option<pentest_core::HttpResponse> {
+async fn send(
+    client: &HttpClient,
+    method: &str,
+    param: &str,
+    base: &str,
+    payload: &str,
+) -> Option<pentest_core::HttpResponse> {
     let val = format!("{base}{payload}");
-    let req = if method == "POST" { HttpRequest::post().form_field(param, val) } else { HttpRequest::get().param(param, val) };
+    let req = if method == "POST" {
+        HttpRequest::post().form_field(param, val)
+    } else {
+        HttpRequest::get().param(param, val)
+    };
     client.request(req).await.ok()
 }
 
@@ -44,19 +57,32 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
     };
 
     for p in ERROR_PAYLOADS {
-        let Some(r) = send(client, &method, param, base, p).await else { continue };
+        let Some(r) = send(client, &method, param, base, p).await else {
+            continue;
+        };
         if let Some(m) = ERROR_RE.find(&r.body) {
-            let mut f = Finding::new(NAME, Severity::Critical, "Error-based SQL injection", format!("payload {p:?} surfaced a DB error"))
+            if ERROR_RE.find(&baseline.body).is_none() {
+                let mut f = Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    "Error-based SQL injection",
+                    format!("payload {p:?} surfaced a DB error"),
+                )
                 .with_evidence(m.as_str());
-            f.payload = format!("{base}{p}");
-            out.push(f);
-            break;
+                f.payload = format!("{base}{p}");
+                out.push(f);
+                break;
+            }
         }
     }
 
     for (true_p, false_p) in BOOL_PAIRS {
-        let Some(t) = send(client, &method, param, base, true_p).await else { continue };
-        let Some(f_resp) = send(client, &method, param, base, false_p).await else { continue };
+        let Some(t) = send(client, &method, param, base, true_p).await else {
+            continue;
+        };
+        let Some(f_resp) = send(client, &method, param, base, false_p).await else {
+            continue;
+        };
         let sim_true_base = similarity(&t.body, &baseline.body);
         let sim_true_false = similarity(&t.body, &f_resp.body);
         if sim_true_base > 0.95 && sim_true_false < 0.90 {
@@ -79,20 +105,32 @@ async fn run_impl(client: &HttpClient, opts: &Opts) -> Vec<Finding> {
         format!("'; WAITFOR DELAY '0:0:{sleep_s}'-- -"),
     ];
     for p in &time_payloads {
-        let Some(r) = send(client, &method, param, base, p).await else { continue };
+        let Some(r) = send(client, &method, param, base, p).await else {
+            continue;
+        };
         let elapsed = r.elapsed.as_secs_f64();
         let baseline_elapsed = baseline.elapsed.as_secs_f64();
         if elapsed >= sleep_s as f64 * 0.8 && elapsed > baseline_elapsed + sleep_s as f64 * 0.6 {
-            let mut fnd = Finding::new(
-                NAME,
-                Severity::Critical,
-                "Time-based blind SQL injection",
-                format!("payload delayed response to {elapsed:.1}s (baseline {baseline_elapsed:.1}s)"),
-            )
-            .with_evidence(p.clone());
-            fnd.payload = p.clone();
-            out.push(fnd);
-            break;
+            let Some(r2) = send(client, &method, param, base, p).await else {
+                continue;
+            };
+            let elapsed2 = r2.elapsed.as_secs_f64();
+            if elapsed2 >= sleep_s as f64 * 0.8
+                && elapsed2 > baseline_elapsed + sleep_s as f64 * 0.6
+            {
+                let mut fnd = Finding::new(
+                    NAME,
+                    Severity::Critical,
+                    "Time-based blind SQL injection",
+                    format!(
+                        "payload delayed response to {elapsed:.1}s, confirmed on repeat at {elapsed2:.1}s (baseline {baseline_elapsed:.1}s)"
+                    ),
+                )
+                .with_evidence(p.clone());
+                fnd.payload = p.clone();
+                out.push(fnd);
+                break;
+            }
         }
     }
 
@@ -104,9 +142,14 @@ mod tests {
     use super::*;
     use crate::checks::test_support::{scripted_server, ScriptedResponse};
     use pentest_core::HttpClientConfig;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn fast_client(base_url: String) -> HttpClient {
-        let config = HttpClientConfig { delay: std::time::Duration::from_millis(0), ..HttpClientConfig::default() };
+        let config = HttpClientConfig {
+            delay: std::time::Duration::from_millis(0),
+            ..HttpClientConfig::default()
+        };
         HttpClient::new(base_url, config)
     }
 
@@ -122,7 +165,10 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("id".to_string()), ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
@@ -132,10 +178,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_error_based_finding_when_the_db_error_is_in_the_baseline() {
+        let base = scripted_server(|_req, _| {
+            ScriptedResponse::ok("You have an error in your SQL syntax; check the manual that corresponds to your MySQL server")
+        })
+        .await;
+        let client = fast_client(base);
+        let opts = Opts {
+            param: Some("id".to_string()),
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        assert!(
+            findings.is_empty(),
+            "a baseline that already renders the DB error must not be flagged as injection"
+        );
+    }
+
+    #[tokio::test]
     async fn detects_time_based_blind_injection() {
         let base = scripted_server(|req, _| {
             let v = req.query.get("id").cloned().unwrap_or_default();
-            if v.to_uppercase().contains("SLEEP") || v.to_uppercase().contains("WAITFOR") || v.to_uppercase().contains("PG_SLEEP") {
+            if v.to_uppercase().contains("SLEEP")
+                || v.to_uppercase().contains("WAITFOR")
+                || v.to_uppercase().contains("PG_SLEEP")
+            {
                 ScriptedResponse::delayed("ok", 850)
             } else {
                 ScriptedResponse::ok("ok")
@@ -143,18 +212,63 @@ mod tests {
         })
         .await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("id".to_string()), sleep: 1, ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 
-        assert!(findings.iter().any(|f| f.title == "Time-based blind SQL injection"));
+        let fnd = findings
+            .iter()
+            .find(|f| f.title == "Time-based blind SQL injection")
+            .expect("consistently slow payload must be flagged");
+        assert_eq!(fnd.severity, Severity::Critical);
+        assert!(
+            fnd.detail.contains("repeat"),
+            "detail must mention the repeated confirmation, got: {fnd:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_time_based_finding_from_a_single_slow_response() {
+        let slow_once = Arc::new(AtomicBool::new(false));
+        let hit = Arc::clone(&slow_once);
+        let base = scripted_server(move |req, _| {
+            let v = req.query.get("id").cloned().unwrap_or_default();
+            let slow = v.to_uppercase().contains("SLEEP") && !hit.swap(true, Ordering::SeqCst);
+            if slow {
+                ScriptedResponse::delayed("ok", 850)
+            } else {
+                ScriptedResponse::ok("ok")
+            }
+        })
+        .await;
+        let client = fast_client(base);
+        let opts = Opts {
+            param: Some("id".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
+
+        let findings = run_impl(&client, &opts).await;
+
+        assert!(
+            findings.is_empty(),
+            "one slow response must not count as time-based blind SQLi"
+        );
     }
 
     #[tokio::test]
     async fn no_findings_against_a_clean_target() {
         let base = scripted_server(|_req, _| ScriptedResponse::ok("static page, no db")).await;
         let client = fast_client(base);
-        let opts = Opts { param: Some("id".to_string()), sleep: 1, ..Opts::default() };
+        let opts = Opts {
+            param: Some("id".to_string()),
+            sleep: 1,
+            ..Opts::default()
+        };
 
         let findings = run_impl(&client, &opts).await;
 

@@ -11,3 +11,7 @@
 turboly.html
 report.html
 report.json
+
+# collaborator runtime hit logs
+collaborator-hits.jsonl
+**/collaborator-hits.jsonl

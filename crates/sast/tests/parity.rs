@@ -1,5 +1,5 @@
 //! Parity verification: one realistic vulnerable fixture and one realistic
-//! safe fixture per rule, proving each of the 6 rules detects what it
+//! safe fixture per rule, proving each of the 13 rules detects what it
 //! should and does not false-positive on the safe counterpart. This is
 //! deliberately separate from `query_rules.rs`'s/`secrets.rs`'s own
 //! terse one-line unit tests -- those verify the query/regex mechanics in
@@ -11,7 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn write_fixture(name: &str, filename: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pentest-sast-parity-{name}-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("pentest-sast-parity-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(filename), contents).unwrap();
@@ -19,7 +20,10 @@ fn write_fixture(name: &str, filename: &str, contents: &str) -> PathBuf {
 }
 
 fn checks_found(dir: &Path) -> Vec<String> {
-    pentest_sast::scan(dir, &[]).into_iter().map(|f| f.check).collect()
+    pentest_sast::scan(dir, &[])
+        .into_iter()
+        .map(|f| f.check)
+        .collect()
 }
 
 #[test]
@@ -242,7 +246,10 @@ ALLOWED_HOSTS = ["example.com"]
 
 #[test]
 fn all_six_rules_fire_together_on_one_mixed_vulnerable_tree() {
-    let dir = std::env::temp_dir().join(format!("pentest-sast-parity-all-six-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "pentest-sast-parity-all-six-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     fs::write(
@@ -271,7 +278,10 @@ def handler(user_id, filename, cookie):
         "sast_path_traversal",
         "sast_hardcoded_secret",
     ] {
-        assert!(checks.iter().any(|c| c == expected), "expected {expected} in {checks:?}");
+        assert!(
+            checks.iter().any(|c| c == expected),
+            "expected {expected} in {checks:?}"
+        );
     }
 }
 
@@ -343,14 +353,99 @@ export function StatusPanel({ host }: { host: string }) {
 // in its own prior output.
 #[test]
 fn scan_excludes_the_given_directory_end_to_end() {
-    let dir = write_fixture("exclude-e2e", "app.py", "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n");
+    let dir = write_fixture(
+        "exclude-e2e",
+        "app.py",
+        "cur.execute(\"SELECT * FROM users WHERE id = \" + user_id)\n",
+    );
     let nested = dir.join("cve");
     fs::create_dir_all(&nested).unwrap();
-    fs::write(nested.join("record.py").as_path(), "cur.execute(\"SELECT * FROM users WHERE id = \" + record_id)\n").unwrap();
+    fs::write(
+        nested.join("record.py").as_path(),
+        "cur.execute(\"SELECT * FROM users WHERE id = \" + record_id)\n",
+    )
+    .unwrap();
 
     let excluded = fs::canonicalize(&nested).unwrap();
     let findings: Vec<_> = pentest_sast::scan(&dir, &[excluded]);
 
-    assert!(findings.iter().any(|f| f.evidence.contains("app.py")), "root-level finding must be present, got {findings:?}");
-    assert!(!findings.iter().any(|f| f.evidence.contains("record.py")), "excluded subdirectory's finding must NOT be present, got {findings:?}");
+    assert!(
+        findings.iter().any(|f| f.evidence.contains("app.py")),
+        "root-level finding must be present, got {findings:?}"
+    );
+    assert!(
+        !findings.iter().any(|f| f.evidence.contains("record.py")),
+        "excluded subdirectory's finding must NOT be present, got {findings:?}"
+    );
+}
+
+// --- sast_ldap_injection (CWE-90)
+
+#[test]
+fn ldap_injection_vulnerable_fixture_is_flagged() {
+    let dir = write_fixture(
+        "ldap-vuln",
+        "directory.py",
+        r#"
+from ldap3 import Connection
+
+def find_user(conn, username):
+    conn.search(search_base="dc=corp", search_filter="(cn=" + username + ")")
+    return conn.entries
+"#,
+    );
+    assert!(checks_found(&dir).contains(&"sast_ldap_injection".to_string()));
+}
+
+#[test]
+fn ldap_injection_safe_fixture_is_not_flagged() {
+    let dir = write_fixture(
+        "ldap-safe",
+        "directory.py",
+        r#"
+from ldap3 import Connection
+
+def find_user(conn, username):
+    escaped = username.replace("\\", "\\5c").replace("*", "\\2a")
+    conn.search(search_base="dc=corp", search_filter=f"(cn={escaped})")
+    return conn.entries
+"#,
+    );
+    assert!(!checks_found(&dir).contains(&"sast_ldap_injection".to_string()));
+}
+
+// --- sast_weak_random (CWE-338)
+
+#[test]
+fn weak_random_vulnerable_fixture_is_flagged() {
+    let dir = write_fixture(
+        "weakrand-vuln",
+        "tokens.js",
+        r#"
+const crypto = require("crypto");
+
+function issueSession(user) {
+    const sessionToken = Math.random().toString(36).slice(2);
+    return { user, sessionToken };
+}
+"#,
+    );
+    assert!(checks_found(&dir).contains(&"sast_weak_random".to_string()));
+}
+
+#[test]
+fn weak_random_safe_fixture_is_not_flagged() {
+    let dir = write_fixture(
+        "weakrand-safe",
+        "tokens.js",
+        r#"
+const crypto = require("crypto");
+
+function issueSession(user) {
+    const sessionToken = crypto.randomBytes(32).toString("hex");
+    return { user, sessionToken };
+}
+"#,
+    );
+    assert!(!checks_found(&dir).contains(&"sast_weak_random".to_string()));
 }

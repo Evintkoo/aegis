@@ -1,4 +1,5 @@
 use clap::Parser;
+use futures::FutureExt;
 use pentest_core::cve::CveWriter;
 use pentest_core::{Finding, HttpClient, HttpClientConfig, Report, Severity};
 use pentest_cve_lookup::{enrich_findings, LookupOpts, CVE_MATCH_CHECK};
@@ -106,10 +107,11 @@ struct Cli {
     #[arg(long, default_value = "cve")]
     cve_dir: String,
 
-    /// Year to file CVE-schema records under (this plan has no datetime
-    /// dependency to compute "now" from; override for cross-year runs)
-    #[arg(long, default_value_t = 2026)]
-    year: u32,
+    /// Year to file CVE-schema records under. Defaults to the current
+    /// calendar year (UTC) derived from the system clock; override for
+    /// reproducible cross-year runs.
+    #[arg(long)]
+    year: Option<u32>,
 
     /// A URL you monitor, for out-of-band SSRF confirmation
     #[arg(long)]
@@ -147,6 +149,29 @@ struct Cli {
     #[arg(long, default_value_t = 4)]
     auth_attempts: u64,
 
+    /// Opt-in: concurrent duplicate-request burst to detect missing
+    /// locking (race_condition). Off by default — the burst multiplies
+    /// request volume against the target.
+    #[arg(long)]
+    race: bool,
+
+    /// Opt-in: bounded request-smuggling framing probes (http targets
+    /// only). Off by default — conflicting-header probes can desync a
+    /// vulnerable front-end's connection reuse.
+    #[arg(long)]
+    smuggling: bool,
+
+    /// Opt-in: out-of-domain values (negative/zero/overflow) on the
+    /// target param (business_logic). Off by default — on POST endpoints
+    /// these values can be state-changing; staging targets only.
+    #[arg(long)]
+    logic: bool,
+
+    /// Opt-in: enumerate accepted TLS protocol versions on https targets
+    /// via direct ClientHello probes (tls_enum).
+    #[arg(long)]
+    tls_enum: bool,
+
     /// Real CVE matching via OSV.dev (on by default; accepted for
     /// symmetry with --no-osv, matching Python's --foo/--no-foo
     /// argparse convention -- it's a no-op since true is already default)
@@ -164,20 +189,81 @@ struct Cli {
 
 /// Suppresses "... check skipped — no --param" style info noise, matching
 /// `run_all.py`'s `_is_skip_notice`. `jwt` is currently the only check
-/// that emits this shape of finding.
+/// that emits this shape of finding. Panic records (`run_check`'s
+/// "panicked — skipped" findings) carry "skip" in their title too but must
+/// stay visible, so they're exempt here.
 fn is_skip_notice(f: &Finding) -> bool {
-    f.severity == Severity::Info && f.title.to_lowercase().contains("skip")
+    f.severity == Severity::Info
+        && f.title.to_lowercase().contains("skip")
+        && !f.title.to_lowercase().contains("panic")
+}
+
+/// Awaits one check future, converting a panic inside it into an Info
+/// finding (plus a stderr warning) instead of letting it abort the whole
+/// run — an aborted run loses every other check's findings.
+async fn run_check(
+    name: &str,
+    fut: impl std::future::Future<Output = Vec<Finding>>,
+) -> Vec<Finding> {
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(findings) => findings,
+        Err(panic) => {
+            let payload = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            eprintln!("warning: check '{name}' panicked — skipped: {payload}");
+            vec![Finding::new(
+                name,
+                Severity::Info,
+                format!("check '{name}' panicked — skipped"),
+                "the check aborted mid-run; the rest of the scan continued",
+            )
+            .with_evidence(payload)]
+        }
+    }
 }
 
 fn parse_headers(items: &[String]) -> HashMap<String, String> {
     let mut hdrs = HashMap::new();
-    hdrs.insert("User-Agent".to_string(), "pentest-toolkit/1.0 (authorized)".to_string());
+    hdrs.insert(
+        "User-Agent".to_string(),
+        "pentest-toolkit/1.0 (authorized)".to_string(),
+    );
     for h in items {
         if let Some((k, v)) = h.split_once(':') {
             hdrs.insert(k.trim().to_string(), v.trim().to_string());
         }
     }
     hdrs
+}
+
+/// Converts days since the Unix epoch to a proleptic-Gregorian year
+/// (Howard Hinnant's `civil_from_days` algorithm, exact across leap
+/// years — no drift from averaging year lengths).
+fn year_from_days(days: i64) -> i64 {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    if mp < 10 {
+        y
+    } else {
+        y + 1
+    }
+}
+
+/// Current UTC calendar year; falls back to 2026 only if the system
+/// clock is set before the Unix epoch.
+fn current_year() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| year_from_days(d.as_secs() as i64 / 86_400) as u32)
+        .unwrap_or(2026)
 }
 
 fn main() {
@@ -198,14 +284,23 @@ fn main() {
                     serde_json::json!({
                         "name": c.name,
                         "kind": if pentest_dast::PARAM.iter().any(|p| p.name == c.name) { "param" } else { "site" },
+                        "refs": pentest_core::standards::refs_for(c.name),
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string_pretty(&checks).unwrap_or_else(|_| "[]".to_string()));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&checks).unwrap_or_else(|_| "[]".to_string())
+            );
         } else {
             println!("Available checks:");
             for c in pentest_dast::ALL {
-                println!("  {}", c.name);
+                let refs = pentest_core::standards::refs_for(c.name);
+                if refs.is_empty() {
+                    println!("  {}", c.name);
+                } else {
+                    println!("  {} — {}", c.name, refs.join(" · "));
+                }
             }
         }
         return;
@@ -216,18 +311,32 @@ fn main() {
         std::process::exit(2);
     }
 
+    let year = cli.year.unwrap_or_else(current_year);
+
     let mods: Vec<&pentest_dast::CheckEntry> = pentest_dast::ALL
         .iter()
         .filter(|c| {
-            let in_only = cli.only.as_ref().is_none_or(|o| o.split(',').any(|n| n.trim() == c.name));
-            let in_skip = cli.skip.as_ref().is_some_and(|s| s.split(',').any(|n| n.trim() == c.name));
+            let in_only = cli
+                .only
+                .as_ref()
+                .is_none_or(|o| o.split(',').any(|n| n.trim() == c.name));
+            let in_skip = cli
+                .skip
+                .as_ref()
+                .is_some_and(|s| s.split(',').any(|n| n.trim() == c.name));
             in_only && !in_skip
         })
         .collect();
-    let site_mods: Vec<&pentest_dast::CheckEntry> =
-        mods.iter().filter(|c| pentest_dast::SITE.iter().any(|s| s.name == c.name)).copied().collect();
-    let param_mods: Vec<&pentest_dast::CheckEntry> =
-        mods.iter().filter(|c| pentest_dast::PARAM.iter().any(|p| p.name == c.name)).copied().collect();
+    let site_mods: Vec<&pentest_dast::CheckEntry> = mods
+        .iter()
+        .filter(|c| pentest_dast::SITE.iter().any(|s| s.name == c.name))
+        .copied()
+        .collect();
+    let param_mods: Vec<&pentest_dast::CheckEntry> = mods
+        .iter()
+        .filter(|c| pentest_dast::PARAM.iter().any(|p| p.name == c.name))
+        .copied()
+        .collect();
 
     let headers = parse_headers(&cli.header);
     let rt = tokio::runtime::Runtime::new().expect("failed to start async runtime");
@@ -250,7 +359,8 @@ fn main() {
         // when the directory doesn't exist yet (the common case for a
         // fresh run, since it's created lazily on first write below) --
         // that's not an error, it just means there's nothing to exclude.
-        let exclude: Vec<std::path::PathBuf> = std::fs::canonicalize(&cli.cve_dir).into_iter().collect();
+        let exclude: Vec<std::path::PathBuf> =
+            std::fs::canonicalize(&cli.cve_dir).into_iter().collect();
         let sast_findings = pentest_sast::scan(std::path::Path::new(src), &exclude);
         note!("[*] SAST: {} finding(s)", sast_findings.len());
         report.add(sast_findings);
@@ -262,9 +372,22 @@ fn main() {
         if !cli.confirm {
             note!("DRY RUN — no requests will be sent. Add --confirm to execute.\n");
             note!("  Target : {} {url}", cli.method);
-            let disc = if cli.no_crawl { "disabled (--no-crawl)" } else { "auto-discover via crawl" };
-            note!("  Param  : {}", cli.param.as_deref().map(str::to_string).unwrap_or_else(|| format!("(none — {disc})")));
-            note!("  Checks : {}", mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+            let disc = if cli.no_crawl {
+                "disabled (--no-crawl)"
+            } else {
+                "auto-discover via crawl"
+            };
+            note!(
+                "  Param  : {}",
+                cli.param
+                    .as_deref()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("(none — {disc})"))
+            );
+            note!(
+                "  Checks : {}",
+                mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+            );
             note!("  Delay  : {}s   Sleep: {}s", cli.delay, cli.sleep);
             note!("\nRun only against systems you own or are authorized to test.");
             if cli.src.is_none() && !json_mode {
@@ -307,14 +430,29 @@ fn main() {
                 pass_field: cli.pass_field.clone(),
                 auth_json: cli.auth_json,
                 auth_attempts: cli.auth_attempts,
+                smuggling: cli.smuggling,
+                race: cli.race,
+                logic: cli.logic,
+                tls_enum: cli.tls_enum,
                 ..Opts::default()
             };
 
-            note!("[*] Site checks: {}", site_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+            note!(
+                "[*] Site checks: {}",
+                site_mods
+                    .iter()
+                    .map(|c| c.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             let before = report.findings.len();
             for m in &site_mods {
-                let findings = rt.block_on((m.run)(&client, &base_opts));
-                report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
+                let findings = rt
+                    .block_on(run_check(m.name, (m.run)(&client, &base_opts)))
+                    .into_iter()
+                    .filter(|f| !is_skip_notice(f))
+                    .collect();
+                report.add(findings);
             }
             for f in report.findings.iter_mut().skip(before) {
                 if f.url.is_empty() {
@@ -324,16 +462,36 @@ fn main() {
 
             if !param_mods.is_empty() {
                 if let Some(param) = cli.param.clone() {
-                    note!("[*] Param checks on '{param}': {}", param_mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "));
+                    note!(
+                        "[*] Param checks on '{param}': {}",
+                        param_mods
+                            .iter()
+                            .map(|c| c.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                     let base_value = reqwest::Url::parse(&url)
                         .ok()
-                        .and_then(|u| u.query_pairs().find(|(k, _)| k == param.as_str()).map(|(_, v)| v.into_owned()))
+                        .and_then(|u| {
+                            u.query_pairs()
+                                .find(|(k, _)| k == param.as_str())
+                                .map(|(_, v)| v.into_owned())
+                        })
                         .unwrap_or_else(|| "1".to_string());
-                    let opts = Opts { param: Some(param.clone()), method: cli.method.clone(), base_value, ..base_opts.clone() };
+                    let opts = Opts {
+                        param: Some(param.clone()),
+                        method: cli.method.clone(),
+                        base_value,
+                        ..base_opts.clone()
+                    };
                     let before = report.findings.len();
                     for m in &param_mods {
-                        let findings = rt.block_on((m.run)(&client, &opts));
-                        report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
+                        let findings = rt
+                            .block_on(run_check(m.name, (m.run)(&client, &opts)))
+                            .into_iter()
+                            .filter(|f| !is_skip_notice(f))
+                            .collect();
+                        report.add(findings);
                     }
                     for f in report.findings.iter_mut().skip(before) {
                         f.url = url.clone();
@@ -348,7 +506,11 @@ fn main() {
                     } else {
                         MineMode::Auto
                     };
-                    let discovery_opts = DiscoveryOpts { crawl_pages: cli.crawl_pages, max_targets: cli.max_targets, mine };
+                    let discovery_opts = DiscoveryOpts {
+                        crawl_pages: cli.crawl_pages,
+                        max_targets: cli.max_targets,
+                        mine,
+                    };
                     let targets = rt.block_on(discover(&client, &url, &discovery_opts));
                     for (i, t) in targets.iter().enumerate() {
                         let ep = t.url.split('?').next().unwrap_or(&t.url);
@@ -361,16 +523,37 @@ fn main() {
                             )
                             .with_evidence(format!("{ep} · {}", t.param))]);
                         }
-                        note!("[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})", i + 1, targets.len(), t.method, t.param, t.source.as_str());
+                        note!(
+                            "[*] ({}/{}) fuzzing {} {ep} · param '{}' (via {})",
+                            i + 1,
+                            targets.len(),
+                            t.method,
+                            t.param,
+                            t.source.as_str()
+                        );
                         let tclient = HttpClient::new(
                             t.url.clone(),
-                            HttpClientConfig { headers: headers.clone(), delay: Duration::from_secs_f64(cli.delay), verify_tls: !cli.insecure, ..HttpClientConfig::default() },
+                            HttpClientConfig {
+                                headers: headers.clone(),
+                                delay: Duration::from_secs_f64(cli.delay),
+                                verify_tls: !cli.insecure,
+                                ..HttpClientConfig::default()
+                            },
                         );
-                        let topts = Opts { param: Some(t.param.clone()), method: t.method.clone(), base_value: t.value.clone(), ..base_opts.clone() };
+                        let topts = Opts {
+                            param: Some(t.param.clone()),
+                            method: t.method.clone(),
+                            base_value: t.value.clone(),
+                            ..base_opts.clone()
+                        };
                         let before = report.findings.len();
                         for m in &param_mods {
-                            let findings = rt.block_on((m.run)(&tclient, &topts));
-                            report.add(findings.into_iter().filter(|f| !is_skip_notice(f)).collect());
+                            let findings = rt
+                                .block_on(run_check(m.name, (m.run)(&tclient, &topts)))
+                                .into_iter()
+                                .filter(|f| !is_skip_notice(f))
+                                .collect();
+                            report.add(findings);
                         }
                         for f in report.findings.iter_mut().skip(before) {
                             f.url = t.url.clone();
@@ -386,7 +569,7 @@ fn main() {
         }
     }
 
-    let cve_writer = match CveWriter::new(&cli.cve_dir, cli.year) {
+    let cve_writer = match CveWriter::new(&cli.cve_dir, year) {
         Ok(w) => Some(w),
         Err(e) => {
             eprintln!("warning: failed to initialize CVE writer: {e}");
@@ -410,8 +593,17 @@ fn main() {
     let osv_enabled = !cli.no_osv;
     if let Some(writer) = &cve_writer {
         if osv_enabled || cli.nvd_api_key.is_some() {
-            let lookup_opts = LookupOpts { osv_enabled, nvd_api_key: cli.nvd_api_key.clone(), ..LookupOpts::enabled() };
-            let matched_findings = rt.block_on(enrich_findings(&report.findings, writer, &lookup_opts, cli.year));
+            let lookup_opts = LookupOpts {
+                osv_enabled,
+                nvd_api_key: cli.nvd_api_key.clone(),
+                ..LookupOpts::enabled()
+            };
+            let matched_findings = rt.block_on(enrich_findings(
+                &report.findings,
+                writer,
+                &lookup_opts,
+                year,
+            ));
             report.add(matched_findings);
         }
     }
@@ -422,6 +614,12 @@ fn main() {
     for f in &mut report.findings {
         if f.remediation.is_empty() {
             f.remediation = verify::remediation_for(&f.check).to_string();
+        }
+        if f.refs.is_empty() {
+            f.refs = pentest_core::standards::refs_for(&f.check)
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         }
         if !cli.no_exploit {
             if f.poc.is_empty() {
@@ -447,13 +645,19 @@ fn main() {
     if let Some(path) = &cli.html_out {
         let mut meta = vec![(
             "Target".to_string(),
-            cli.url.as_deref().map(|u| format!("{} {u}", cli.method)).unwrap_or_else(|| "(none — SAST-only run)".to_string()),
+            cli.url
+                .as_deref()
+                .map(|u| format!("{} {u}", cli.method))
+                .unwrap_or_else(|| "(none — SAST-only run)".to_string()),
         )];
         if let Some(src) = &cli.src {
             meta.push(("Source dir".to_string(), src.clone()));
         }
         if dast_ran {
-            meta.push(("Checks run".to_string(), mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")));
+            meta.push((
+                "Checks run".to_string(),
+                mods.iter().map(|c| c.name).collect::<Vec<_>>().join(", "),
+            ));
         }
         meta.push(("Findings".to_string(), report.findings.len().to_string()));
         match std::fs::write(path, report.to_html(&meta)) {
@@ -470,15 +674,111 @@ fn main() {
     // local record.
     if let Some(writer) = &cve_writer {
         let mut local_only = Report::new();
-        local_only.add(report.findings.iter().filter(|f| f.check != CVE_MATCH_CHECK).cloned().collect());
+        local_only.add(
+            report
+                .findings
+                .iter()
+                .filter(|f| f.check != CVE_MATCH_CHECK)
+                .cloned()
+                .collect(),
+        );
         if let Err(e) = local_only.write_cve_records(writer) {
             eprintln!("warning: failed to write CVE records: {e}");
         }
     }
 
-    let severe = report
-        .findings
-        .iter()
-        .any(|f| matches!(f.severity, pentest_core::Severity::Critical | pentest_core::Severity::High));
+    let severe = report.findings.iter().any(|f| {
+        matches!(
+            f.severity,
+            pentest_core::Severity::Critical | pentest_core::Severity::High
+        )
+    });
     std::process::exit(if severe { 1 } else { 0 });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn year_from_days_matches_known_dates() {
+        // 1970-01-01, 2024-02-29 (leap day), 2024-12-31, 2025-01-01,
+        // 2026-09-18, 2100-03-01 (the day after non-leap century year
+        // 2100's February ends).
+        for (days, expected) in [
+            (0i64, 1970),
+            (19782, 2024),
+            (20088, 2024),
+            (20089, 2025),
+            (20683, 2026),
+            (47482, 2100),
+        ] {
+            assert_eq!(year_from_days(days), expected, "days={days}");
+        }
+    }
+
+    #[test]
+    fn current_year_is_a_plausible_calendar_year() {
+        let y = current_year();
+        assert!(
+            (2026..=2200).contains(&y),
+            "implausible system-clock year: {y}"
+        );
+    }
+
+    #[test]
+    fn is_skip_notice_exempts_panic_records() {
+        let panic_record = Finding::new(
+            "boom",
+            Severity::Info,
+            "check 'boom' panicked — skipped",
+            "the check aborted mid-run",
+        );
+        assert!(!is_skip_notice(&panic_record));
+
+        let skip_notice =
+            Finding::new("jwt", Severity::Info, "jwt check skipped — no token", "n/a");
+        assert!(is_skip_notice(&skip_notice));
+    }
+
+    #[tokio::test]
+    async fn run_check_passes_a_healthy_finding_through() {
+        let findings = run_check("ok", async {
+            vec![Finding::new("ok", Severity::High, "t", "d")]
+        })
+        .await;
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].title, "t");
+    }
+
+    #[tokio::test]
+    async fn run_check_turns_a_panicking_check_into_an_info_finding() {
+        async fn panicking_check() -> Vec<Finding> {
+            panic!("kaboom at stage 2");
+        }
+
+        let findings = run_check("boom", panicking_check()).await;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
+        assert_eq!(findings[0].check, "boom");
+        assert!(
+            findings[0].title.contains("panicked — skipped"),
+            "got {}",
+            findings[0].title
+        );
+        assert_eq!(findings[0].evidence, "kaboom at stage 2");
+    }
+
+    #[tokio::test]
+    async fn run_check_reports_an_opaque_panic_payload() {
+        async fn opaque_panic() -> Vec<Finding> {
+            std::panic::panic_any(42u32);
+        }
+
+        let findings = run_check("opaque", opaque_panic()).await;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].evidence, "unknown panic payload");
+    }
 }

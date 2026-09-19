@@ -49,7 +49,11 @@ mod tests {
         tokio::spawn(Arc::clone(&collab).serve(listener));
         let base = format!("http://{addr}");
 
-        reqwest::Client::new().get(format!("{base}/plant1/ssrf")).send().await.unwrap();
+        reqwest::Client::new()
+            .get(format!("{base}/plant1/ssrf"))
+            .send()
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let hits = get_hits(&base, "plant1").await.unwrap();

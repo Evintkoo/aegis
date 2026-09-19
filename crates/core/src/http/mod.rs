@@ -46,7 +46,10 @@ impl HttpClient {
 
     /// Looks up a configured client-level header by name, case-insensitively.
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 
     /// All configured client-level headers -- checks that must scan every
@@ -79,7 +82,9 @@ impl HttpClient {
     }
 
     pub async fn request(&self, req: HttpRequest) -> Result<HttpResponse, HttpError> {
-        self.rate_limit().await;
+        if !req.urgent {
+            self.rate_limit().await;
+        }
         let url = self.build_url(&req)?;
         let client = if req.allow_redirects {
             &self.client_follow
@@ -151,7 +156,11 @@ impl HttpClient {
     }
 }
 
-fn build_reqwest_client(verify_tls: bool, timeout: Duration, follow_redirects: bool) -> reqwest::Client {
+fn build_reqwest_client(
+    verify_tls: bool,
+    timeout: Duration,
+    follow_redirects: bool,
+) -> reqwest::Client {
     let redirect_policy = if follow_redirects {
         reqwest::redirect::Policy::default()
     } else {

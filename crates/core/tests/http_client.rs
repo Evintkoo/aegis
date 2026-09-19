@@ -40,7 +40,9 @@ async fn get_params_override_existing_query_value() {
 
     let recorded = rx.await.unwrap();
     assert!(recorded.path_and_query.contains("id=999"));
-    assert!(!recorded.path_and_query.contains("id=1&") && !recorded.path_and_query.ends_with("id=1"));
+    assert!(
+        !recorded.path_and_query.contains("id=1&") && !recorded.path_and_query.ends_with("id=1")
+    );
 }
 
 #[tokio::test]
@@ -62,19 +64,27 @@ async fn post_form_sends_url_encoded_body() {
 async fn custom_header_is_sent() {
     let (base_url, rx) = one_shot_server(TestResponse::ok("ok")).await;
     let mut config = HttpClientConfig::default();
-    config.headers.insert("X-Test".to_string(), "abc".to_string());
+    config
+        .headers
+        .insert("X-Test".to_string(), "abc".to_string());
     let client = HttpClient::new(base_url, config);
 
     client.request(HttpRequest::get()).await.unwrap();
 
     let recorded = rx.await.unwrap();
-    assert!(recorded.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("x-test") && v == "abc"));
+    assert!(recorded
+        .headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("x-test") && v == "abc"));
 }
 
 #[tokio::test]
 async fn first_request_on_a_fresh_client_is_not_delayed() {
     let (base_url, rx) = one_shot_server(TestResponse::ok("one")).await;
-    let config = HttpClientConfig { delay: std::time::Duration::from_millis(300), ..HttpClientConfig::default() };
+    let config = HttpClientConfig {
+        delay: std::time::Duration::from_millis(300),
+        ..HttpClientConfig::default()
+    };
     let client = HttpClient::new(base_url, config);
 
     let start = std::time::Instant::now();
@@ -89,7 +99,10 @@ async fn second_request_on_the_same_client_is_rate_limited() {
     let (base_url_a, rx_a) = one_shot_server(TestResponse::ok("one")).await;
     let (base_url_b, rx_b) = one_shot_server(TestResponse::ok("two")).await;
 
-    let config = HttpClientConfig { delay: std::time::Duration::from_millis(200), ..HttpClientConfig::default() };
+    let config = HttpClientConfig {
+        delay: std::time::Duration::from_millis(200),
+        ..HttpClientConfig::default()
+    };
     let client = HttpClient::new(base_url_a.clone(), config);
 
     let start = std::time::Instant::now();
@@ -98,7 +111,10 @@ async fn second_request_on_the_same_client_is_rate_limited() {
 
     // Same client, different URL per-request (base_url is just the default) — the rate
     // limit lives on the client, not on any particular target URL.
-    client.request(HttpRequest::get().url(base_url_b)).await.unwrap();
+    client
+        .request(HttpRequest::get().url(base_url_b))
+        .await
+        .unwrap();
     let _ = rx_b.await.unwrap();
 
     assert!(start.elapsed() >= std::time::Duration::from_millis(200));
@@ -110,7 +126,10 @@ async fn concurrent_requests_on_the_same_client_are_serialized_by_the_rate_limit
     let (base_url_a, rx_a) = one_shot_server(TestResponse::ok("one")).await;
     let (base_url_b, rx_b) = one_shot_server(TestResponse::ok("two")).await;
 
-    let config = HttpClientConfig { delay: std::time::Duration::from_millis(200), ..HttpClientConfig::default() };
+    let config = HttpClientConfig {
+        delay: std::time::Duration::from_millis(200),
+        ..HttpClientConfig::default()
+    };
     let client = HttpClient::new(base_url_prime, config);
 
     // Prime the client so `last` is fresh going into the timed section below:
@@ -145,7 +164,9 @@ async fn concurrent_requests_on_the_same_client_are_serialized_by_the_rate_limit
 #[test]
 fn header_lookup_is_case_insensitive() {
     let mut config = HttpClientConfig::default();
-    config.headers.insert("Authorization".to_string(), "Bearer abc".to_string());
+    config
+        .headers
+        .insert("Authorization".to_string(), "Bearer abc".to_string());
     let client = HttpClient::new("https://example.test", config);
 
     assert_eq!(client.header("authorization"), Some("Bearer abc"));
@@ -157,27 +178,47 @@ fn header_lookup_is_case_insensitive() {
 async fn request_level_header_overrides_client_level_header_of_the_same_name() {
     let (base_url, rx) = one_shot_server(TestResponse::ok("ok")).await;
     let mut config = HttpClientConfig::default();
-    config.headers.insert("X-Foo".to_string(), "client-value".to_string());
+    config
+        .headers
+        .insert("X-Foo".to_string(), "client-value".to_string());
     let client = HttpClient::new(base_url, config);
 
-    client.request(HttpRequest::get().header("X-Foo", "req-value")).await.unwrap();
+    client
+        .request(HttpRequest::get().header("X-Foo", "req-value"))
+        .await
+        .unwrap();
 
     let recorded = rx.await.unwrap();
-    let matches: Vec<_> = recorded.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case("x-foo")).collect();
-    assert_eq!(matches.len(), 1, "expected exactly one X-Foo header, got {matches:?}");
+    let matches: Vec<_> = recorded
+        .headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("x-foo"))
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one X-Foo header, got {matches:?}"
+    );
     assert_eq!(matches[0].1, "req-value");
 }
 
 #[test]
 fn headers_exposes_every_configured_client_header() {
     let mut config = HttpClientConfig::default();
-    config.headers.insert("Authorization".to_string(), "Bearer abc".to_string());
-    config.headers.insert("X-Test".to_string(), "abc".to_string());
+    config
+        .headers
+        .insert("Authorization".to_string(), "Bearer abc".to_string());
+    config
+        .headers
+        .insert("X-Test".to_string(), "abc".to_string());
     let client = HttpClient::new("https://example.test", config);
 
     let all = client.headers();
     assert_eq!(all.len(), 2);
-    assert_eq!(all.get("Authorization").map(String::as_str), Some("Bearer abc"));
+    assert_eq!(
+        all.get("Authorization").map(String::as_str),
+        Some("Bearer abc")
+    );
     assert_eq!(all.get("X-Test").map(String::as_str), Some("abc"));
 }
 
@@ -187,7 +228,11 @@ async fn raw_body_is_sent_verbatim_without_form_encoding() {
     let client = HttpClient::new(base_url, HttpClientConfig::default());
 
     client
-        .request(HttpRequest::post().raw_body(b"<doc>&xxe;</doc>".to_vec()).header("Content-Type", "application/xml"))
+        .request(
+            HttpRequest::post()
+                .raw_body(b"<doc>&xxe;</doc>".to_vec())
+                .header("Content-Type", "application/xml"),
+        )
         .await
         .unwrap();
 
@@ -201,7 +246,11 @@ async fn raw_body_is_ignored_when_json_is_also_set() {
     let client = HttpClient::new(base_url, HttpClientConfig::default());
 
     client
-        .request(HttpRequest::post().json(serde_json::json!({"a": 1})).raw_body(b"ignored".to_vec()))
+        .request(
+            HttpRequest::post()
+                .json(serde_json::json!({"a": 1}))
+                .raw_body(b"ignored".to_vec()),
+        )
         .await
         .unwrap();
 
